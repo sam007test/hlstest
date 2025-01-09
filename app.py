@@ -88,14 +88,21 @@ def index():
                     except Exception as e:
                         logger.error(f"Error cleaning up file {file}: {e}")
 
-            # FFmpeg command
+            # Kill any existing FFmpeg processes
+            try:
+                subprocess.run(['pkill', 'ffmpeg'])
+            except Exception as e:
+                logger.error(f"Error killing existing FFmpeg processes: {e}")
+
+            # Modified FFmpeg command with loop
             ffmpeg_cmd = [
                 'ffmpeg',
+                '-stream_loop', '-1',  # Loop infinitely
                 '-i', video_url,
                 '-c:v', 'copy',
                 '-c:a', 'copy',
                 '-hls_time', '6',
-                '-hls_list_size', '0',
+                '-hls_list_size', '10',  # Keep last 10 segments
                 '-hls_segment_filename', f'{UPLOAD_FOLDER}/segment%03d.ts',
                 '-hls_flags', 'delete_segments+append_list',
                 '-f', 'hls',
@@ -104,16 +111,19 @@ def index():
             
             logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
             
+            # Run FFmpeg in the background
             process = subprocess.Popen(
                 ffmpeg_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                universal_newlines=True
+                universal_newlines=True,
+                start_new_session=True  # This helps ensure the process continues running
             )
             
             # Wait a bit for initial segments
             try:
-                process.wait(timeout=10)
+                # Reduced timeout to 5 seconds since we just need initial segments
+                process.wait(timeout=5)
                 stdout, stderr = process.communicate()
                 if process.returncode != 0:
                     error = f"FFmpeg Error: {stderr}"
@@ -122,7 +132,7 @@ def index():
                     stream_url = f"https://{request.host}/stream/stream.m3u8"
                     logger.info(f"Stream URL generated: {stream_url}")
             except subprocess.TimeoutExpired:
-                # This is actually expected as FFmpeg keeps running
+                # Expected behavior - FFmpeg keeps running
                 stream_url = f"https://{request.host}/stream/stream.m3u8"
                 logger.info(f"Stream URL generated: {stream_url}")
             
