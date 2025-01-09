@@ -5,10 +5,10 @@ RUN apt-get update && \
     ffmpeg \
     libterm-readline-perl-perl \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install Flask==2.3.3
 
 WORKDIR /app
-COPY . .
-RUN pip install -r requirements.txt
+COPY app.py .
 
 CMD ["python", "app.py"]
