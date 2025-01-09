@@ -132,7 +132,8 @@ def index():
                     "-hls_time", "6",
                     "-hls_list_size", "5",  # Keep the latest 5 segments
                     "-hls_flags", "delete_segments+append_list",
-                    "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
+                    "-strftime", "1",
+                    "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment_%Y%m%d%H%M%S_%03d.ts",
                     stream_path,
                 ]
 
@@ -164,6 +165,7 @@ def index():
                         "-hls_time", "6",
                         "-hls_list_size", "5",  # Keep only the latest segments
                         "-hls_flags", "append_list",
+                        "-strftime", "1",
                         "-hls_segment_filename", segment_file,
                         stream_path,
                     ]
