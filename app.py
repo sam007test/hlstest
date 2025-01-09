@@ -125,7 +125,7 @@ def index():
             time.sleep(3)
             
             if os.path.exists(stream_path):
-                stream_url = f"http://{request.host}/stream/current/stream.m3u8"
+                stream_url = f"https://{request.host}/stream/current/stream.m3u8"
                 logger.info(f"Stream URL generated: {stream_url}")
             else:
                 error = "Failed to generate stream"
