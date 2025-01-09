@@ -6,18 +6,13 @@ import logging
 import time
 import shutil
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Create a dedicated directory for streams
 UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'streams')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# Store active FFmpeg processes
-active_processes = {}
 
 TEMPLATE = """
 <!DOCTYPE html>
@@ -74,57 +69,6 @@ TEMPLATE = """
 </html>
 """
 
-def create_stream_directory():
-    """Create a unique stream directory"""
-    stream_dir = os.path.join(UPLOAD_FOLDER, str(int(time.time())))
-    os.makedirs(stream_dir, exist_ok=True)
-    return stream_dir
-
-def cleanup_old_streams():
-    """Clean up old stream directories"""
-    try:
-        for dir_name in os.listdir(UPLOAD_FOLDER):
-            dir_path = os.path.join(UPLOAD_FOLDER, dir_name)
-            if os.path.isdir(dir_path) and dir_name.isdigit():
-                if int(time.time()) - int(dir_name) > 3600:  # Older than 1 hour
-                    shutil.rmtree(dir_path, ignore_errors=True)
-    except Exception as e:
-        logger.error(f"Error cleaning up old streams: {e}")
-
-def start_stream(video_url, stream_dir):
-    """Start FFmpeg process for streaming"""
-    stream_path = os.path.join(stream_dir, 'stream.m3u8')
-    
-    # First command: Create a looped input file
-    concat_file = os.path.join(stream_dir, 'concat.txt')
-    with open(concat_file, 'w') as f:
-        f.write(f"file '{video_url}'\n" * 3)  # Write the same file 3 times
-
-    ffmpeg_cmd = [
-        'ffmpeg',
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', concat_file,
-        '-c', 'copy',
-        '-f', 'hls',
-        '-hls_time', '2',  # Smaller segments for smoother transitions
-        '-hls_list_size', '15',  # Keep more segments
-        '-hls_flags', 'delete_segments+append_list+discont_start',
-        '-hls_segment_filename', os.path.join(stream_dir, 'segment%03d.ts'),
-        '-live_start_index', '-3',  # Start playback from 3 segments before the end
-        stream_path
-    ]
-
-    process = subprocess.Popen(
-        ffmpeg_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        universal_newlines=True,
-        start_new_session=True
-    )
-    
-    return process, stream_path
-
 @app.route('/', methods=['GET', 'POST'])
 def index():
     error = None
@@ -132,20 +76,56 @@ def index():
     
     if request.method == 'POST':
         video_url = request.form['video_url']
+        stream_dir = os.path.join(UPLOAD_FOLDER, 'current')
+        os.makedirs(stream_dir, exist_ok=True)
+        stream_path = os.path.join(stream_dir, 'stream.m3u8')
         
         try:
-            cleanup_old_streams()
-            stream_dir = create_stream_directory()
+            # Clean up old files
+            for file in os.listdir(stream_dir):
+                if file.endswith('.ts') or file.endswith('.m3u8'):
+                    try:
+                        os.unlink(os.path.join(stream_dir, file))
+                    except Exception as e:
+                        logger.error(f"Error cleaning up file {file}: {e}")
+
+            # Kill any existing FFmpeg processes
+            try:
+                subprocess.run(['pkill', 'ffmpeg'])
+            except Exception as e:
+                logger.error(f"Error killing existing FFmpeg processes: {e}")
+
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-stream_loop', '-1',
+                '-re',
+                '-i', video_url,
+                '-c:v', 'copy',
+                '-c:a', 'copy',
+                '-f', 'hls',
+                '-hls_time', '2',
+                '-hls_list_size', '15',
+                '-hls_flags', 'delete_segments+append_list+omit_endlist+discont_start',
+                '-hls_segment_filename', os.path.join(stream_dir, 'segment%03d.ts'),
+                '-live_start_index', '-3',
+                stream_path
+            ]
             
-            process, stream_path = start_stream(video_url, stream_dir)
-            stream_id = os.path.basename(stream_dir)
-            active_processes[stream_id] = process
+            logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
+            
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                start_new_session=True
+            )
             
             # Wait for initial segments
             time.sleep(3)
             
             if os.path.exists(stream_path):
-                stream_url = f"https://{request.host}/stream/{stream_id}/stream.m3u8"
+                stream_url = f"http://{request.host}/stream/current/stream.m3u8"
                 logger.info(f"Stream URL generated: {stream_url}")
             else:
                 error = "Failed to generate stream"
@@ -156,11 +136,13 @@ def index():
             
     return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
 
-@app.route('/stream/<stream_id>/<path:filename>')
-def serve_stream(stream_id, filename):
+@app.route('/stream/<path:filename>')
+def serve_stream(filename):
     try:
-        stream_dir = os.path.join(UPLOAD_FOLDER, stream_id)
-        response = send_from_directory(stream_dir, filename)
+        dir_name = os.path.dirname(filename)
+        base_name = os.path.basename(filename)
+        stream_dir = os.path.join(UPLOAD_FOLDER, dir_name)
+        response = send_from_directory(stream_dir, base_name)
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Cache-Control'] = 'no-cache'
         return response
