@@ -131,11 +131,6 @@ def index():
 
                 # Endless loop for repeated processing
                 while True:
-                    # Clean up old files
-                    for file in os.listdir(UPLOAD_FOLDER):
-                        if file.endswith(".ts") or file.endswith(".m3u8"):
-                            os.unlink(os.path.join(UPLOAD_FOLDER, file))
-
                     # FFmpeg command
                     ffmpeg_cmd = [
                         "ffmpeg", "-stream_loop", "-1",
