@@ -129,7 +129,7 @@ def index():
                     "-c:v", "copy",
                     "-c:a", "copy",
                     "-hls_time", "6",
-                    "-hls_list_size", "10",
+                    "-hls_list_size", "1000000",
                     "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
                     "-f", "hls",
                     stream_path,
