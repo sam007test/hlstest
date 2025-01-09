@@ -124,7 +124,7 @@ def index():
 
                 # FFmpeg command
                 ffmpeg_cmd = [
-                    "ffmpeg",
+                    "ffmpeg", "-stream_loop", "-1",
                     "-i", video_url,
                     "-c:v", "copy",
                     "-c:a", "copy",
@@ -134,6 +134,8 @@ def index():
                     "-f", "hls",
                     stream_path,
                 ]
+               
+               
 
                 # Run FFmpeg and simulate progress
                 process = subprocess.Popen(
