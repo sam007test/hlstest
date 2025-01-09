@@ -4,6 +4,7 @@ import os
 import logging
 import signal
 import psutil
+import time
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -11,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Create upload folder in the project directory
-UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp')
+# Use Docker container's tmp directory
+UPLOAD_FOLDER = '/app/tmp'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Store the current FFmpeg process
@@ -34,6 +35,9 @@ TEMPLATE = """
         }
         .progress {
             height: 25px;
+        }
+        #streamUrl {
+            word-break: break-all;
         }
     </style>
 </head>
@@ -76,7 +80,10 @@ TEMPLATE = """
                             <div class="alert alert-success">
                                 <h5>Your Stream URL:</h5>
                                 <p class="mb-2" id="streamUrl"></p>
-                                <small class="text-muted">Use this URL in your media player (VLC, etc)</small>
+                                <div class="mt-3">
+                                    <button class="btn btn-sm btn-secondary" onclick="copyStreamUrl()">Copy URL</button>
+                                </div>
+                                <small class="text-muted d-block mt-2">Use this URL in your media player (VLC, etc)</small>
                             </div>
                         </div>
 
@@ -103,6 +110,13 @@ TEMPLATE = """
             startStream();
         });
 
+        function copyStreamUrl() {
+            const streamUrl = document.getElementById('streamUrl').textContent;
+            navigator.clipboard.writeText(streamUrl)
+                .then(() => alert('Stream URL copied to clipboard!'))
+                .catch(err => console.error('Failed to copy:', err));
+        }
+
         function startStream() {
             const videoUrl = document.getElementById('video_url').value;
             const statusContainer = document.getElementById('statusContainer');
@@ -110,13 +124,11 @@ TEMPLATE = """
             const errorContainer = document.getElementById('errorContainer');
             const submitBtn = document.getElementById('submitBtn');
 
-            // Reset and show status container
             statusContainer.style.display = 'block';
             streamUrlContainer.style.display = 'none';
             errorContainer.style.display = 'none';
             submitBtn.disabled = true;
 
-            // Initialize progress tracking
             startTime = Date.now();
             updateTimeElapsed();
             statusCheckInterval = setInterval(updateTimeElapsed, 1000);
@@ -146,7 +158,6 @@ TEMPLATE = """
                 showError('An error occurred while processing your request.');
             });
 
-            // Simulate progress updates
             simulateProgress();
         }
 
@@ -210,9 +221,19 @@ def kill_ffmpeg():
         except:
             pass
 
+def check_ffmpeg():
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+        return result.returncode == 0
+    except:
+        return False
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
+        if not check_ffmpeg():
+            return jsonify({'error': 'FFmpeg is not installed or not working properly.'})
+            
         video_url = request.form['video_url']
         stream_path = os.path.join(UPLOAD_FOLDER, 'stream.m3u8')
         
@@ -227,7 +248,6 @@ def index():
                     except Exception as e:
                         logger.error(f"Error cleaning up file {file}: {e}")
 
-            # Kill any existing FFmpeg processes
             kill_ffmpeg()
 
             global current_ffmpeg_process
@@ -248,6 +268,8 @@ def index():
                 stream_path
             ]
             
+            logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
+            
             current_ffmpeg_process = subprocess.Popen(
                 ffmpeg_cmd,
                 stdout=subprocess.PIPE,
@@ -256,17 +278,19 @@ def index():
                 start_new_session=True
             )
             
-            try:
-                current_ffmpeg_process.wait(timeout=5)
+            # Wait for initial segments
+            time.sleep(5)
+            
+            if current_ffmpeg_process.poll() is not None:
                 stdout, stderr = current_ffmpeg_process.communicate()
-                if current_ffmpeg_process.returncode != 0:
-                    return jsonify({'error': f"FFmpeg Error: {stderr}"})
-            except subprocess.TimeoutExpired:
-                if os.path.exists(stream_path):
-                    stream_url = f"https://{request.host}/stream/stream.m3u8"
-                    return jsonify({'stream_url': stream_url})
-                else:
-                    return jsonify({'error': 'Failed to create stream file'})
+                logger.error(f"FFmpeg error: {stderr}")
+                return jsonify({'error': f"Error processing video: {stderr}"})
+            
+            if os.path.exists(stream_path):
+                stream_url = f"http://{request.host}/stream/stream.m3u8"
+                return jsonify({'stream_url': stream_url})
+            else:
+                return jsonify({'error': 'Failed to create stream. Please check if the video URL is accessible.'})
             
         except Exception as e:
             logger.error(f"Error processing request: {e}")
@@ -289,7 +313,15 @@ def serve_stream(filename):
         logger.error(f"Error serving file {filename}: {e}")
         return str(e), 500
 
-# Cleanup handler
+@app.route('/health')
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'ffmpeg_installed': check_ffmpeg(),
+        'upload_folder_exists': os.path.exists(UPLOAD_FOLDER),
+        'upload_folder_writable': os.access(UPLOAD_FOLDER, os.W_OK)
+    })
+
 def cleanup_handler(signum, frame):
     kill_ffmpeg()
     exit(0)
