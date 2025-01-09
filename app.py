@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template_string, redirect
+from flask import Flask, request, render_template_string, redirect, url_for
 import subprocess
 import os
 
@@ -71,7 +71,8 @@ def index():
                 "-f", "hls",
                 f"{hls_output_dir}/playlist.m3u8"
             ])
-            stream_url = f"http://localhost:5000/hls/playlist.m3u8"
+            base_url = request.host_url.rstrip("/")
+            stream_url = f"{base_url}/hls/playlist.m3u8"
         elif "stop" in request.form:
             if stream_process:
                 stream_process.terminate()
@@ -84,7 +85,7 @@ def index():
 
 @app.route("/hls/<path:filename>")
 def hls_files(filename):
-    return app.send_static_file(f"hls/{filename}")
+    return app.send_from_directory(hls_output_dir, filename)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
