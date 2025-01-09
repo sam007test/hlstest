@@ -3,17 +3,86 @@ import subprocess
 import os
 import tempfile
 import logging
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-UPLOAD_FOLDER = tempfile.gettempdir()
+# Get timestamp for unique folder
+timestamp = str(int(time.time()))
+UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), timestamp)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Store the active FFmpeg process
 current_process = None
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    global current_process
+    error = None
+    stream_url = None
+    
+    if request.method == 'POST':
+        video_url = request.form['video_url']
+        stream_path = os.path.join(UPLOAD_FOLDER, 'stream.m3u8')
+        
+        try:
+            # Kill existing FFmpeg process if any
+            if current_process:
+                current_process.terminate()
+            
+            # Clean up old files
+            for file in os.listdir(UPLOAD_FOLDER):
+                if file.endswith('.ts') or file.endswith('.m3u8'):
+                    try:
+                        os.unlink(os.path.join(UPLOAD_FOLDER, file))
+                    except:
+                        pass
+
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-stream_loop', '-1',
+                '-i', video_url,
+                '-c', 'copy',
+                '-f', 'hls',
+                '-hls_time', '1',
+                '-hls_list_size', '5',
+                '-hls_flags', 'delete_segments+append_list+omit_endlist',
+                '-hls_segment_type', 'mpegts',
+                stream_path
+            ]
+            
+            current_process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            time.sleep(2)
+            
+            if os.path.exists(stream_path):
+                stream_url = f'http://{request.host}/stream/{timestamp}/stream.m3u8'
+            else:
+                error = "Failed to start stream"
+                
+        except Exception as e:
+            error = str(e)
+            logger.error(f"Error: {error}")
+    
+    return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
+
+@app.route('/stream/<timestamp>/<path:filename>')
+def serve_stream(timestamp, filename):
+    directory = os.path.join(tempfile.gettempdir(), timestamp)
+    try:
+        response = send_from_directory(directory, filename)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Cache-Control'] = 'no-cache'
+        return response
+    except Exception as e:
+        logger.error(f"Error serving file {filename}: {e}")
+        return str(e), 500
 
 TEMPLATE = """
 <!DOCTYPE html>
@@ -69,74 +138,6 @@ TEMPLATE = """
 </body>
 </html>
 """
-
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    global current_process
-    error = None
-    stream_url = None
-    
-    if request.method == 'POST':
-        video_url = request.form['video_url']
-        stream_path = os.path.join(UPLOAD_FOLDER, 'stream.m3u8')
-        
-        try:
-            # Kill existing FFmpeg process if any
-            if current_process:
-                current_process.terminate()
-            
-            # Clean up old files
-            for file in os.listdir(UPLOAD_FOLDER):
-                if file.endswith('.ts') or file.endswith('.m3u8'):
-                    try:
-                        os.unlink(os.path.join(UPLOAD_FOLDER, file))
-                    except:
-                        pass
-
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-stream_loop', '-1',  # Infinite loop
-                '-i', video_url,
-                '-c', 'copy',          # Copy codec (no re-encoding)
-                '-f', 'hls',
-                '-hls_time', '1',      # 1-second segments
-                '-hls_list_size', '5', # Keep 5 segments
-                '-hls_flags', 'delete_segments+append_list+omit_endlist',
-                '-hls_segment_type', 'mpegts',
-                stream_path
-            ]
-            
-            current_process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            
-            # Let FFmpeg create initial segments
-            import time
-            time.sleep(2)
-            
-            if os.path.exists(stream_path):
-                stream_url = f'http://{request.host}/stream/stream.m3u8'
-            else:
-                error = "Failed to start stream"
-                
-        except Exception as e:
-            error = str(e)
-            logger.error(f"Error: {error}")
-    
-    return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
-
-@app.route('/stream/<path:filename>')
-def serve_stream(filename):
-    try:
-        response = send_from_directory(UPLOAD_FOLDER, filename)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Cache-Control'] = 'no-cache'
-        return response
-    except Exception as e:
-        logger.error(f"Error serving file {filename}: {e}")
-        return str(e), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
