@@ -113,54 +113,111 @@ def index():
         stream_path = os.path.join(UPLOAD_FOLDER, "stream.m3u8")
         progress["value"] = 0
 
-        def process_video():
-            try:
-                logger.info(f"Processing video URL: {video_url}")
+    #     def process_video():
+    #         try:
+    #             logger.info(f"Processing video URL: {video_url}")
 
-                # Clean up old files
-                for file in os.listdir(UPLOAD_FOLDER):
-                    if file.endswith(".ts") or file.endswith(".m3u8"):
-                        os.unlink(os.path.join(UPLOAD_FOLDER, file))
+    #             # Clean up old files
+    #             for file in os.listdir(UPLOAD_FOLDER):
+    #                 if file.endswith(".ts") or file.endswith(".m3u8"):
+    #                     os.unlink(os.path.join(UPLOAD_FOLDER, file))
 
-                # FFmpeg command
-                ffmpeg_cmd = [
-                    "ffmpeg", "-stream_loop", "-1",
-                    "-i", video_url,
-                    "-c:v", "copy",
-                    "-c:a", "copy",
-                    "-hls_time", "6",
-                    "-hls_list_size", "1000000",
-                    "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
-                    "-f", "hls",
-                    stream_path,
-                ]
+    #             # FFmpeg command
+    #             ffmpeg_cmd = [
+    #                 "ffmpeg", "-stream_loop", "-1",
+    #                 "-i", video_url,
+    #                 "-c:v", "copy",
+    #                 "-c:a", "copy",
+    #                 "-hls_time", "6",
+    #                 "-hls_list_size", "1000000",
+    #                 "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
+    #                 "-f", "hls",
+    #                 stream_path,
+    #             ]
                
                
 
-                # Run FFmpeg and simulate progress
-                process = subprocess.Popen(
-                    ffmpeg_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    universal_newlines=True,
-                )
+    #             # Run FFmpeg and simulate progress
+    #             process = subprocess.Popen(
+    #                 ffmpeg_cmd,
+    #                 stdout=subprocess.PIPE,
+    #                 stderr=subprocess.PIPE,
+    #                 universal_newlines=True,
+    #             )
 
-                # Simulate progress updates
-                while process.poll() is None:
-                    time.sleep(1)
-                    progress["value"] = min(progress["value"] + 10, 100)
+    #             # Simulate progress updates
+    #             while process.poll() is None:
+    #                 time.sleep(1)
+    #                 progress["value"] = min(progress["value"] + 10, 100)
 
-                progress["value"] = 100  # Complete
-                logger.info("Processing complete.")
+    #             progress["value"] = 100  # Complete
+    #             logger.info("Processing complete.")
 
-            except Exception as e:
-                logger.error(f"Error during video processing: {e}")
-                progress["value"] = 100  # Stop progress on error
+    #         except Exception as e:
+    #             logger.error(f"Error during video processing: {e}")
+    #             progress["value"] = 100  # Stop progress on error
 
-        threading.Thread(target=process_video).start()
-        stream_url = f"https://{request.host}/stream/stream.m3u8"
+    #     threading.Thread(target=process_video).start()
+    #     stream_url = f"https://{request.host}/stream/stream.m3u8"
 
-    return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
+    # return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
+   def process_video():
+       try:
+           logger.info(f"Processing video URL: {video_url}")
+   
+           # Calculate video duration using ffprobe
+           ffprobe_cmd = [
+               "ffprobe", "-v", "error",
+               "-select_streams", "v:0",
+               "-show_entries", "stream=duration",
+               "-of", "default=noprint_wrappers=1:nokey=1",
+               video_url,
+           ]
+           result = subprocess.run(ffprobe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+           video_duration = float(result.stdout.strip()) if result.stdout.strip() else 0
+           logger.info(f"Video duration: {video_duration} seconds.")
+   
+           # Endless loop for repeated processing
+           while True:
+               # Clean up old files
+               for file in os.listdir(UPLOAD_FOLDER):
+                   if file.endswith(".ts") or file.endswith(".m3u8"):
+                       os.unlink(os.path.join(UPLOAD_FOLDER, file))
+   
+               # FFmpeg command
+               ffmpeg_cmd = [
+                   "ffmpeg", "-stream_loop", "-1",
+                   "-i", video_url,
+                   "-c:v", "copy",
+                   "-c:a", "copy",
+                   "-hls_time", "6",
+                   "-hls_list_size", "1000000",
+                   "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
+                   "-f", "hls",
+                   stream_path,
+               ]
+   
+               # Run FFmpeg
+               process = subprocess.Popen(
+                   ffmpeg_cmd,
+                   stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE,
+                   universal_newlines=True,
+               )
+   
+               # Monitor process and update progress
+               while process.poll() is None:
+                   time.sleep(1)
+                   progress["value"] = min(progress["value"] + 10, 100)
+                   logger.info(f"Progress: {progress['value']}%")
+   
+               progress["value"] = 100  # Complete after one loop iteration
+               logger.info("Processing complete. Restarting...")
+   
+       except Exception as e:
+           logger.error(f"Error during video processing: {e}")
+           progress["value"] = 100  # Stop progress on error
+
 
 
 @app.route("/progress")
