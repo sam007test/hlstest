@@ -1,129 +1,90 @@
-from flask import Flask, request, jsonify, send_from_directory
-import os
+from flask import Flask, request, render_template_string, redirect
 import subprocess
-import threading
-import requests
+import os
 
 app = Flask(__name__)
 
-HLS_DIR = "hls_output"
-HLS_PORT = 8000
-server_thread = None
+stream_process = None
+hls_output_dir = "hls"
 
+# Ensure the HLS output directory exists
+if not os.path.exists(hls_output_dir):
+    os.makedirs(hls_output_dir)
 
-def download_mp4(mp4_url, output_path="input_video.mp4"):
-    """
-    Downloads an MP4 file from a given URL.
+TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HLS Streamer</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+    <div class="container py-5">
+        <h1 class="text-center text-primary mb-4">HLS Streamer</h1>
+        <div class="card shadow">
+            <div class="card-body">
+                <form method="post" class="mb-3">
+                    <div class="mb-3">
+                        <label for="mp4_url" class="form-label">MP4 URL</label>
+                        <input type="url" class="form-control" id="mp4_url" name="mp4_url" placeholder="Enter MP4 URL (e.g., https://example.com/video.mp4)" required>
+                    </div>
+                    <button type="submit" name="start" class="btn btn-primary w-100 mb-2">Start Streaming</button>
+                </form>
+                {% if stream_url %}
+                <div class="alert alert-success">
+                    <strong>Stream URL:</strong> 
+                    <a href="{{ stream_url }}" target="_blank">{{ stream_url }}</a>
+                </div>
+                <form method="post">
+                    <button type="submit" name="stop" class="btn btn-danger w-100">Stop Streaming</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+"""
 
-    Args:
-        mp4_url (str): URL of the MP4 file.
-        output_path (str): Path to save the downloaded file.
-    """
-    response = requests.get(mp4_url, stream=True)
-    if response.status_code == 200:
-        with open(output_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        return output_path
-    else:
-        raise Exception(f"Failed to download MP4. HTTP status code: {response.status_code}")
+@app.route("/", methods=["GET", "POST"])
+def index():
+    global stream_process
+    stream_url = None
 
+    if request.method == "POST":
+        if "start" in request.form:
+            mp4_url = request.form["mp4_url"]
+            if stream_process:
+                stream_process.terminate()
+            stream_process = subprocess.Popen([
+                "ffmpeg",
+                "-i", mp4_url,
+                "-codec:", "copy",
+                "-start_number", "0",
+                "-hls_time", "2",
+                "-hls_list_size", "0",
+                "-f", "hls",
+                f"{hls_output_dir}/playlist.m3u8"
+            ])
+            stream_url = f"http://localhost:5000/hls/playlist.m3u8"
+        elif "stop" in request.form:
+            if stream_process:
+                stream_process.terminate()
+                stream_process = None
+                # Clean up HLS output
+                for file in os.listdir(hls_output_dir):
+                    os.remove(os.path.join(hls_output_dir, file))
 
-def generate_hls(input_mp4, output_dir, segment_time=10):
-    """
-    Converts MP4 to HLS (.m3u8 and .ts files).
+    return render_template_string(TEMPLATE, stream_url=stream_url)
 
-    Args:
-        input_mp4 (str): Path to the input MP4 file.
-        output_dir (str): Directory to save HLS files.
-        segment_time (int): Duration of each segment in seconds.
-    """
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    command = [
-        "ffmpeg",
-        "-i", input_mp4,
-        "-codec:V", "libx264",
-        "-codec:a", "aac",
-        "-ac", "2",
-        "-hls_time", str(segment_time),
-        "-hls_playlist_type", "vod",
-        "-hls_segment_filename", os.path.join(output_dir, "segment_%03d.ts"),
-        os.path.join(output_dir, "playlist.m3u8"),
-    ]
-    subprocess.run(command, check=True)
-
-
-def start_http_server(directory, port=HLS_PORT):
-    """
-    Starts an HTTP server to serve files in a directory.
-    """
-    os.chdir(directory)
-
-    handler = threading.Thread(target=lambda: os.system(f"python3 -m http.server {port}"))
-    handler.daemon = True
-    handler.start()
-
-
-@app.route("/start", methods=["POST"])
-def start_streaming():
-    """
-    API endpoint to start HLS streaming.
-    """
-    global server_thread
-
-    try:
-        data = request.json
-        mp4_url = data.get("mp4_url")
-
-        if not mp4_url:
-            return jsonify({"error": "No MP4 URL provided"}), 400
-
-        # Step 1: Download the MP4
-        input_mp4 = "input_video.mp4"
-        download_mp4(mp4_url, input_mp4)
-
-        # Step 2: Convert MP4 to HLS
-        if os.path.exists(HLS_DIR):
-            subprocess.run(["rm", "-rf", HLS_DIR])  # Clean up old files
-        generate_hls(input_mp4, HLS_DIR)
-
-        # Step 3: Start HTTP Server
-        if server_thread is None:
-            server_thread = threading.Thread(target=start_http_server, args=(HLS_DIR,))
-            server_thread.start()
-
-        return jsonify({"message": f"Streaming started at http://0.0.0.0:{HLS_PORT}/playlist.m3u8"})
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/stop", methods=["POST"])
-def stop_streaming():
-    """
-    API endpoint to stop HLS streaming.
-    """
-    global server_thread
-
-    if server_thread is not None:
-        os.system("pkill -f 'python3 -m http.server'")  # Stop the HTTP server
-        server_thread = None
-
-    return jsonify({"message": "Streaming stopped."})
-
-
-@app.route("/")
-def home():
-    """
-    Home page with instructions.
-    """
-    return jsonify({
-        "message": "Use /start (POST) to start streaming and /stop (POST) to stop streaming.",
-        "example_start": {"mp4_url": "http://example.com/video.mp4"}
-    })
-
+@app.route("/hls/<path:filename>")
+def hls_files(filename):
+    return app.send_static_file(f"hls/{filename}")
 
 if __name__ == "__main__":
-    app.run(port=5000)
+    app.run(host="0.0.0.0", port=5000)
