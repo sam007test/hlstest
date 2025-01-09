@@ -4,14 +4,13 @@ import os
 import tempfile
 import logging
 import time
-import shutil
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'streams')
+UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'stream')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 TEMPLATE = """
@@ -69,6 +68,57 @@ TEMPLATE = """
 </html>
 """
 
+def process_video(video_url):
+    output_dir = os.path.join(UPLOAD_FOLDER, 'segments')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Clean existing files
+    for file in os.listdir(output_dir):
+        try:
+            os.unlink(os.path.join(output_dir, file))
+        except:
+            pass
+
+    # Generate segments
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-i', video_url,
+        '-c:v', 'copy',
+        '-c:a', 'copy',
+        '-f', 'segment',
+        '-segment_time', '2',
+        '-segment_format', 'mpegts',
+        os.path.join(output_dir, 'segment%03d.ts')
+    ]
+
+    process = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+    if process.returncode != 0:
+        raise Exception(f"FFmpeg error: {process.stderr}")
+
+    return output_dir
+
+def create_playlist(segments_dir):
+    segments = sorted([f for f in os.listdir(segments_dir) if f.endswith('.ts')])
+    playlist_path = os.path.join(UPLOAD_FOLDER, 'playlist.m3u8')
+    
+    with open(playlist_path, 'w') as f:
+        f.write('#EXTM3U\n')
+        f.write('#EXT-X-VERSION:3\n')
+        f.write('#EXT-X-TARGETDURATION:2\n')
+        f.write('#EXT-X-MEDIA-SEQUENCE:0\n')
+        
+        for segment in segments:
+            f.write('#EXTINF:2.0,\n')
+            f.write(f'segments/{segment}\n')
+        
+        # Loop back to start
+        f.write('#EXT-X-DISCONTINUITY\n')
+        for segment in segments:
+            f.write('#EXTINF:2.0,\n')
+            f.write(f'segments/{segment}\n')
+
+    return playlist_path
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     error = None
@@ -76,73 +126,26 @@ def index():
     
     if request.method == 'POST':
         video_url = request.form['video_url']
-        stream_dir = os.path.join(UPLOAD_FOLDER, 'current')
-        os.makedirs(stream_dir, exist_ok=True)
-        stream_path = os.path.join(stream_dir, 'stream.m3u8')
-        
         try:
-            # Clean up old files
-            for file in os.listdir(stream_dir):
-                if file.endswith('.ts') or file.endswith('.m3u8'):
-                    try:
-                        os.unlink(os.path.join(stream_dir, file))
-                    except Exception as e:
-                        logger.error(f"Error cleaning up file {file}: {e}")
-
-            # Kill any existing FFmpeg processes
-            try:
-                subprocess.run(['pkill', 'ffmpeg'])
-            except Exception as e:
-                logger.error(f"Error killing existing FFmpeg processes: {e}")
-
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-stream_loop', '-1',
-                '-re',
-                '-i', video_url,
-                '-c:v', 'copy',
-                '-c:a', 'copy',
-                '-f', 'hls',
-                '-hls_time', '2',
-                '-hls_list_size', '15',
-                '-hls_flags', 'delete_segments+append_list+omit_endlist+discont_start',
-                '-hls_segment_filename', os.path.join(stream_dir, 'segment%03d.ts'),
-                '-live_start_index', '-3',
-                stream_path
-            ]
-            
-            logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
-            
-            process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                start_new_session=True
-            )
-            
-            # Wait for initial segments
-            time.sleep(3)
-            
-            if os.path.exists(stream_path):
-                stream_url = f"https://{request.host}/stream/current/stream.m3u8"
-                logger.info(f"Stream URL generated: {stream_url}")
-            else:
-                error = "Failed to generate stream"
-                
+            segments_dir = process_video(video_url)
+            playlist_path = create_playlist(segments_dir)
+            stream_url = f'http://{request.host}/stream/playlist.m3u8'
         except Exception as e:
-            error = f"Error: {str(e)}"
-            logger.error(f"Error processing request: {e}")
-            
+            error = str(e)
+            logger.error(f"Error: {error}")
+    
     return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
 
 @app.route('/stream/<path:filename>')
 def serve_stream(filename):
+    if 'segments/' in filename:
+        directory = os.path.join(UPLOAD_FOLDER, 'segments')
+        filename = os.path.basename(filename)
+    else:
+        directory = UPLOAD_FOLDER
+    
     try:
-        dir_name = os.path.dirname(filename)
-        base_name = os.path.basename(filename)
-        stream_dir = os.path.join(UPLOAD_FOLDER, dir_name)
-        response = send_from_directory(stream_dir, base_name)
+        response = send_from_directory(directory, filename)
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Cache-Control'] = 'no-cache'
         return response
@@ -151,5 +154,4 @@ def serve_stream(filename):
         return str(e), 500
 
 if __name__ == '__main__':
-    port = 5000
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=5000)
