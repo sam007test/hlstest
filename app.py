@@ -86,7 +86,7 @@ TEMPLATE = """
                    .then(data => {
                        const progress = data.value;
                        progressBar.style.width = progress + "%";
-                       progressText.textContent = `Processing... ${progress}%`;
+                       progressText.textContent = \`Processing... \${progress}%\`;
                        if (progress < 100) {
                            setTimeout(updateProgress, 500);
                        } else {
@@ -122,7 +122,7 @@ def index():
                     if file.endswith(".ts") or file.endswith(".m3u8"):
                         os.unlink(os.path.join(UPLOAD_FOLDER, file))
 
-                # Initial FFmpeg command for preprocessing
+                # Initial FFmpeg command for preprocessing the MP4 and creating HLS
                 ffmpeg_cmd = [
                     "ffmpeg",
                     "-i", video_url,
@@ -133,25 +133,25 @@ def index():
                     "-hls_list_size", "5",  # Keep the latest 5 segments
                     "-hls_flags", "delete_segments+append_list",
                     "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
-                    "-method", "PUT",
                     stream_path,
                 ]
 
-                logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
+                logger.info(f"Running FFmpeg command for initial HLS creation: {' '.join(ffmpeg_cmd)}")
                 process = subprocess.Popen(ffmpeg_cmd, stderr=subprocess.PIPE, universal_newlines=True)
 
-                # Simulate progress updates
+                # Simulate progress until the initial HLS creation is complete
                 while process.poll() is None:
                     time.sleep(1)
                     progress["value"] = min(progress["value"] + 10, 100)
 
-                progress["value"] = 100  # Processing complete
-                logger.info("Live streaming initiated.")
+                progress["value"] = 100
+                logger.info("Initial HLS segments created. Starting continuous segment loop...")
 
-                # Start appending new video segments after preprocessing
+                # Start an indefinite loop to simulate new segments being added,
+                # mimicking a live stream
                 segment_counter = 0
                 while True:
-                    new_timestamp = time.strftime("%Y%m%d%H%M%S")  # Create a timestamp for each segment
+                    new_timestamp = time.strftime("%Y%m%d%H%M%S")
                     segment_file = os.path.join(UPLOAD_FOLDER, f"segment_{new_timestamp}_{segment_counter}.ts")
 
                     # Append the new segment using FFmpeg
@@ -162,7 +162,7 @@ def index():
                         "-c:a", "copy",
                         "-f", "hls",
                         "-hls_time", "6",
-                        "-hls_list_size", "5",  # Keep latest segments
+                        "-hls_list_size", "5",  # Keep only the latest segments
                         "-hls_flags", "append_list",
                         "-hls_segment_filename", segment_file,
                         stream_path,
@@ -171,25 +171,25 @@ def index():
                     subprocess.run(ffmpeg_append_cmd)
 
                     segment_counter += 1
-
-                    # Wait before appending the next segment
-                    time.sleep(6)  # Adjust according to segment time (6 seconds here)
+                    # Wait before creating the next segment (simulating constant streaming)
+                    time.sleep(6)
 
             except Exception as e:
                 logger.error(f"Error during live stream setup: {e}")
                 progress["value"] = 100  # Stop progress on error
 
+        # Start the video processing in a separate thread
         threading.Thread(target=process_video).start()
+
+        # Construct a URL that serves the generated .m3u8 file
         stream_url = f"https://{request.host}/stream/stream.m3u8"
 
     return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
-
 
 @app.route("/progress")
 def get_progress():
     global progress
     return jsonify(progress)
-
 
 @app.route("/stream/<path:filename>")
 def serve_stream(filename):
@@ -202,6 +202,6 @@ def serve_stream(filename):
         logger.error(f"Error serving file {filename}: {e}")
         return str(e), 500
 
-
 if __name__ == "__main__":
+    # Run the Flask app on port 5000
     app.run(host="0.0.0.0", port=5000)
