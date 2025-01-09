@@ -1,10 +1,10 @@
 from flask import Flask, request, render_template_string, send_from_directory, jsonify
 import subprocess
 import os
-import logging
-import signal
-import psutil
+import tempfile
+import threading
 import time
+import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -12,323 +12,172 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Use Docker container's tmp directory
-UPLOAD_FOLDER = '/app/tmp'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+UPLOAD_FOLDER = tempfile.gettempdir()
+progress = {"value": 0}  # Dictionary to track progress globally
 
-# Store the current FFmpeg process
-current_ffmpeg_process = None
-
-# Define the HTML template
 TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Stream Generator</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .status-container {
-            display: none;
-            margin-top: 20px;
-        }
-        .progress {
-            height: 25px;
-        }
-        #streamUrl {
-            word-break: break-all;
-        }
-    </style>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <title>Stream Generator</title>
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+   <style>
+       .progress { height: 30px; }
+       .progress-bar { transition: width 0.4s; }
+   </style>
 </head>
 <body class="bg-light">
-    <div class="container py-4">
-        <div class="row justify-content-center">
-            <div class="col-md-8">
-                <div class="card shadow">
-                    <div class="card-header bg-primary text-white">
-                        <h3 class="mb-0">Stream Generator</h3>
-                    </div>
-                    <div class="card-body">
-                        <form id="streamForm" method="post">
-                            <div class="mb-3">
-                                <label for="video_url" class="form-label">Video URL</label>
-                                <input type="url" class="form-control" id="video_url" name="video_url" 
-                                       placeholder="Enter video URL (MP4)" required>
-                            </div>
-                            <button type="submit" class="btn btn-primary" id="submitBtn">Generate Stream</button>
-                        </form>
-                        
-                        <!-- Status Container -->
-                        <div class="status-container" id="statusContainer">
-                            <div class="card">
-                                <div class="card-body">
-                                    <h5 class="card-title">Processing Status</h5>
-                                    <div class="progress mb-3">
-                                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
-                                             role="progressbar" id="progressBar" style="width: 0%">
-                                        </div>
-                                    </div>
-                                    <div id="statusText" class="mb-2">Initializing...</div>
-                                    <div id="timeElapsed" class="text-muted">Time Elapsed: 0s</div>
-                                </div>
-                            </div>
-                        </div>
+   <div class="container py-4">
+       <div class="row justify-content-center">
+           <div class="col-md-8">
+               <div class="card shadow">
+                   <div class="card-header bg-primary text-white">
+                       <h3 class="mb-0">Stream Generator</h3>
+                   </div>
+                   <div class="card-body">
+                       <form method="post">
+                           <div class="mb-3">
+                               <label for="video_url" class="form-label">Video URL</label>
+                               <input type="url" class="form-control" id="video_url" name="video_url" 
+                                      placeholder="Enter video URL (MP4)" required>
+                           </div>
+                           <button type="submit" class="btn btn-primary">Generate Stream</button>
+                       </form>
 
-                        <!-- Stream URL Container -->
-                        <div class="mt-4" id="streamUrlContainer" style="display: none;">
-                            <div class="alert alert-success">
-                                <h5>Your Stream URL:</h5>
-                                <p class="mb-2" id="streamUrl"></p>
-                                <div class="mt-3">
-                                    <button class="btn btn-sm btn-secondary" onclick="copyStreamUrl()">Copy URL</button>
-                                </div>
-                                <small class="text-muted d-block mt-2">Use this URL in your media player (VLC, etc)</small>
-                            </div>
-                        </div>
+                       <div class="mt-3">
+                           <div class="progress">
+                               <div id="progress-bar" class="progress-bar bg-success" role="progressbar" style="width: 0%"></div>
+                           </div>
+                           <small class="text-muted" id="progress-text">Processing...</small>
+                       </div>
 
-                        <!-- Error Container -->
-                        <div class="mt-4" id="errorContainer" style="display: none;">
-                            <div class="alert alert-danger">
-                                <h5>Error:</h5>
-                                <p id="errorText"></p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+                       {% if stream_url %}
+                       <div class="mt-4">
+                           <div class="alert alert-success">
+                               <h5>Your Stream URL:</h5>
+                               <p class="mb-2">{{ stream_url }}</p>
+                               <small class="text-muted">Use this URL in your media player (VLC, etc)</small>
+                           </div>
+                       {% endif %}
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        let startTime;
-        let statusCheckInterval;
+                       {% if error %}
+                       <div class="mt-4">
+                           <div class="alert alert-danger">
+                               <h5>Error:</h5>
+                               <p>{{ error }}</p>
+                           </div>
+                       </div>
+                       {% endif %}
+                   </div>
+               </div>
+           </div>
+       </div>
+   </div>
+   <script>
+       document.addEventListener("DOMContentLoaded", () => {
+           const progressBar = document.getElementById("progress-bar");
+           const progressText = document.getElementById("progress-text");
 
-        document.getElementById('streamForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            startStream();
-        });
-
-        function copyStreamUrl() {
-            const streamUrl = document.getElementById('streamUrl').textContent;
-            navigator.clipboard.writeText(streamUrl)
-                .then(() => alert('Stream URL copied to clipboard!'))
-                .catch(err => console.error('Failed to copy:', err));
-        }
-
-        function startStream() {
-            const videoUrl = document.getElementById('video_url').value;
-            const statusContainer = document.getElementById('statusContainer');
-            const streamUrlContainer = document.getElementById('streamUrlContainer');
-            const errorContainer = document.getElementById('errorContainer');
-            const submitBtn = document.getElementById('submitBtn');
-
-            statusContainer.style.display = 'block';
-            streamUrlContainer.style.display = 'none';
-            errorContainer.style.display = 'none';
-            submitBtn.disabled = true;
-
-            startTime = Date.now();
-            updateTimeElapsed();
-            statusCheckInterval = setInterval(updateTimeElapsed, 1000);
-
-            fetch('/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: `video_url=${encodeURIComponent(videoUrl)}`
-            })
-            .then(response => response.json())
-            .then(data => {
-                clearInterval(statusCheckInterval);
-                submitBtn.disabled = false;
-                statusContainer.style.display = 'none';
-
-                if (data.error) {
-                    showError(data.error);
-                } else {
-                    showStreamUrl(data.stream_url);
-                }
-            })
-            .catch(error => {
-                clearInterval(statusCheckInterval);
-                submitBtn.disabled = false;
-                showError('An error occurred while processing your request.');
-            });
-
-            simulateProgress();
-        }
-
-        function simulateProgress() {
-            let progress = 0;
-            const progressBar = document.getElementById('progressBar');
-            const statusText = document.getElementById('statusText');
-            
-            const interval = setInterval(() => {
-                if (progress >= 90) {
-                    clearInterval(interval);
-                    return;
-                }
-                progress += Math.random() * 15;
-                if (progress > 90) progress = 90;
-                progressBar.style.width = `${progress}%`;
-                progressBar.textContent = `${Math.round(progress)}%`;
-                
-                if (progress < 30) {
-                    statusText.textContent = 'Initializing stream...';
-                } else if (progress < 60) {
-                    statusText.textContent = 'Processing video...';
-                } else {
-                    statusText.textContent = 'Generating stream URL...';
-                }
-            }, 1000);
-        }
-
-        function updateTimeElapsed() {
-            const timeElapsed = Math.floor((Date.now() - startTime) / 1000);
-            document.getElementById('timeElapsed').textContent = `Time Elapsed: ${timeElapsed}s`;
-        }
-
-        function showStreamUrl(url) {
-            document.getElementById('streamUrl').textContent = url;
-            document.getElementById('streamUrlContainer').style.display = 'block';
-        }
-
-        function showError(message) {
-            document.getElementById('errorText').textContent = message;
-            document.getElementById('errorContainer').style.display = 'block';
-        }
-    </script>
+           function updateProgress() {
+               fetch("/progress")
+                   .then(response => response.json())
+                   .then(data => {
+                       const progress = data.value;
+                       progressBar.style.width = progress + "%";
+                       progressText.textContent = `Processing... ${progress}%`;
+                       if (progress < 100) {
+                           setTimeout(updateProgress, 500);
+                       } else {
+                           progressText.textContent = "Processing complete!";
+                       }
+                   });
+           }
+           updateProgress();
+       });
+   </script>
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
 
-def kill_ffmpeg():
-    global current_ffmpeg_process
-    if current_ffmpeg_process:
-        try:
-            current_ffmpeg_process.kill()
-        except:
-            pass
-    
-    # Kill any remaining FFmpeg processes
-    for proc in psutil.process_iter(['pid', 'name']):
-        try:
-            if 'ffmpeg' in proc.info['name'].lower():
-                proc.kill()
-        except:
-            pass
-
-def check_ffmpeg():
-    try:
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
-        return result.returncode == 0
-    except:
-        return False
-
-@app.route('/', methods=['GET', 'POST'])
+@app.route("/", methods=["GET", "POST"])
 def index():
-    if request.method == 'POST':
-        if not check_ffmpeg():
-            return jsonify({'error': 'FFmpeg is not installed or not working properly.'})
-            
-        video_url = request.form['video_url']
-        stream_path = os.path.join(UPLOAD_FOLDER, 'stream.m3u8')
-        
-        try:
-            logger.info(f"Processing video URL: {video_url}")
-            
-            # Clean up old files
-            for file in os.listdir(UPLOAD_FOLDER):
-                if file.endswith('.ts') or file.endswith('.m3u8'):
-                    try:
+    global progress
+    error = None
+    stream_url = None
+
+    if request.method == "POST":
+        video_url = request.form["video_url"]
+        stream_path = os.path.join(UPLOAD_FOLDER, "stream.m3u8")
+        progress["value"] = 0
+
+        def process_video():
+            try:
+                logger.info(f"Processing video URL: {video_url}")
+
+                # Clean up old files
+                for file in os.listdir(UPLOAD_FOLDER):
+                    if file.endswith(".ts") or file.endswith(".m3u8"):
                         os.unlink(os.path.join(UPLOAD_FOLDER, file))
-                    except Exception as e:
-                        logger.error(f"Error cleaning up file {file}: {e}")
 
-            kill_ffmpeg()
+                # FFmpeg command
+                ffmpeg_cmd = [
+                    "ffmpeg",
+                    "-i", video_url,
+                    "-c:v", "copy",
+                    "-c:a", "copy",
+                    "-hls_time", "6",
+                    "-hls_list_size", "10",
+                    "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
+                    "-f", "hls",
+                    stream_path,
+                ]
 
-            global current_ffmpeg_process
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-stream_loop', '-1',
-                '-re',
-                '-i', video_url,
-                '-c:v', 'copy',
-                '-c:a', 'copy',
-                '-hls_time', '30',
-                '-hls_list_size', '20',
-                '-hls_segment_filename', f'{UPLOAD_FOLDER}/segment%03d.ts',
-                '-hls_flags', 'delete_segments+append_list+omit_endlist',
-                '-hls_segment_type', 'mpegts',
-                '-method', 'PUT',
-                '-f', 'hls',
-                stream_path
-            ]
-            
-            logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
-            
-            current_ffmpeg_process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                start_new_session=True
-            )
-            
-            # Wait for initial segments
-            time.sleep(5)
-            
-            if current_ffmpeg_process.poll() is not None:
-                stdout, stderr = current_ffmpeg_process.communicate()
-                logger.error(f"FFmpeg error: {stderr}")
-                return jsonify({'error': f"Error processing video: {stderr}"})
-            
-            if os.path.exists(stream_path):
-                stream_url = f"http://{request.host}/stream/stream.m3u8"
-                return jsonify({'stream_url': stream_url})
-            else:
-                return jsonify({'error': 'Failed to create stream. Please check if the video URL is accessible.'})
-            
-        except Exception as e:
-            logger.error(f"Error processing request: {e}")
-            return jsonify({'error': str(e)})
-            
-    return render_template_string(TEMPLATE)
+                # Run FFmpeg and simulate progress
+                process = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                )
 
-@app.route('/stream/<path:filename>')
+                # Simulate progress updates
+                while process.poll() is None:
+                    time.sleep(1)
+                    progress["value"] = min(progress["value"] + 10, 100)
+
+                progress["value"] = 100  # Complete
+                logger.info("Processing complete.")
+
+            except Exception as e:
+                logger.error(f"Error during video processing: {e}")
+                progress["value"] = 100  # Stop progress on error
+
+        threading.Thread(target=process_video).start()
+        stream_url = f"https://{request.host}/stream/stream.m3u8"
+
+    return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
+
+
+@app.route("/progress")
+def get_progress():
+    global progress
+    return jsonify(progress)
+
+
+@app.route("/stream/<path:filename>")
 def serve_stream(filename):
     try:
-        if os.path.exists(os.path.join(UPLOAD_FOLDER, filename)):
-            response = send_from_directory(UPLOAD_FOLDER, filename)
-            response.headers['Access-Control-Allow-Origin'] = '*'
-            response.headers['Cache-Control'] = 'no-cache'
-            return response
-        else:
-            logger.error(f"File not found: {filename}")
-            return "File not found", 404
+        response = send_from_directory(UPLOAD_FOLDER, filename)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Cache-Control"] = "no-cache"
+        return response
     except Exception as e:
         logger.error(f"Error serving file {filename}: {e}")
         return str(e), 500
 
-@app.route('/health')
-def health_check():
-    return jsonify({
-        'status': 'healthy',
-        'ffmpeg_installed': check_ffmpeg(),
-        'upload_folder_exists': os.path.exists(UPLOAD_FOLDER),
-        'upload_folder_writable': os.access(UPLOAD_FOLDER, os.W_OK)
-    })
 
-def cleanup_handler(signum, frame):
-    kill_ffmpeg()
-    exit(0)
-
-signal.signal(signal.SIGTERM, cleanup_handler)
-signal.signal(signal.SIGINT, cleanup_handler)
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
