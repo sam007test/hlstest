@@ -149,9 +149,10 @@ def index():
                 logger.info("Live streaming initiated.")
 
                 # Start appending new video segments after preprocessing
+                segment_counter = 0
                 while True:
-                    new_timestamp = time.strftime("%Y%m%d%H%M%S")
-                    segment_file = os.path.join(UPLOAD_FOLDER, f"segment_{new_timestamp}.ts")
+                    new_timestamp = time.strftime("%Y%m%d%H%M%S")  # Create a timestamp for each segment
+                    segment_file = os.path.join(UPLOAD_FOLDER, f"segment_{new_timestamp}_{segment_counter}.ts")
 
                     # Append the new segment using FFmpeg
                     ffmpeg_append_cmd = [
@@ -169,8 +170,10 @@ def index():
                     logger.info(f"Appending new segment: {' '.join(ffmpeg_append_cmd)}")
                     subprocess.run(ffmpeg_append_cmd)
 
+                    segment_counter += 1
+
                     # Wait before appending the next segment
-                    time.sleep(6)  # Adjust according to segment time
+                    time.sleep(6)  # Adjust according to segment time (6 seconds here)
 
             except Exception as e:
                 logger.error(f"Error during live stream setup: {e}")
