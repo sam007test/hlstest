@@ -18,9 +18,7 @@ TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HLS Streamer</title>
-    <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- HLS.js -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 <body class="bg-light">
@@ -31,8 +29,7 @@ TEMPLATE = """
                 <form method="post" class="mb-3">
                     <div class="mb-3">
                         <label for="mp4_url" class="form-label">MP4 URL</label>
-                        <input type="url" class="form-control" id="mp4_url" name="mp4_url" 
-                               placeholder="Enter MP4 URL (e.g., https://example.com/video.mp4)" required>
+                        <input type="url" class="form-control" id="mp4_url" name="mp4_url" required>
                     </div>
                     <button type="submit" name="start" class="btn btn-primary w-100 mb-2">Start Streaming</button>
                 </form>
@@ -53,10 +50,8 @@ TEMPLATE = """
         </div>
     </div>
 
-    <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
     
-    <!-- HLS Player Script -->
     <script>
         {% if stream_url %}
         document.addEventListener('DOMContentLoaded', function() {
@@ -72,7 +67,6 @@ TEMPLATE = """
                     video.play();
                 });
             }
-            // For browsers that have native HLS support (Safari/iOS)
             else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = '{{ stream_url }}';
                 video.addEventListener('loadedmetadata', function() {
@@ -97,16 +91,24 @@ def index():
             if stream_process:
                 stream_process.terminate()
             
+            # Clear existing files
+            for file in os.listdir(hls_output_dir):
+                os.remove(os.path.join(hls_output_dir, file))
+            
+            # Updated FFmpeg command for better compatibility
             stream_process = subprocess.Popen([
                 "ffmpeg",
                 "-i", mp4_url,
-                "-c:v", "copy",
-                "-c:a", "copy",
-                "-hls_time", "2",
-                "-hls_list_size", "0",
-                "-hls_segment_filename", f"{hls_output_dir}/segment%d.ts",
-                "-hls_flags", "delete_segments",
+                "-c:v", "libx264",     # Use H.264 codec
+                "-c:a", "aac",         # Use AAC for audio
+                "-b:v", "2000k",       # Video bitrate
+                "-b:a", "128k",        # Audio bitrate
+                "-hls_time", "10",     # Segment duration
+                "-hls_list_size", "0", # Keep all segments
+                "-hls_segment_type", "mpegts",
+                "-hls_segment_filename", f"{hls_output_dir}/segment%03d.ts",
                 "-f", "hls",
+                "-hls_flags", "independent_segments",
                 f"{hls_output_dir}/playlist.m3u8"
             ])
             
@@ -127,6 +129,7 @@ def index():
 def hls_files(filename):
     response = app.send_from_directory(hls_output_dir, filename)
     response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Cache-Control'] = 'no-cache'
     return response
 
 if __name__ == "__main__":
