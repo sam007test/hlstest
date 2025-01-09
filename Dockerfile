@@ -6,7 +6,7 @@ RUN apt-get update && \
     libterm-readline-perl-perl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install Flask==2.3.3
+    && pip install Flask==2.3.3 psutil
 
 WORKDIR /app
 COPY app.py .
