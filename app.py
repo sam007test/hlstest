@@ -3,15 +3,24 @@ import subprocess
 import os
 import tempfile
 import logging
+import threading
+import queue
 import time
 
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'stream')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Use /tmp directory which is writable on Render
+UPLOAD_FOLDER = tempfile.gettempdir()
+
+# Global variables for stream management
+stream_queue = queue.Queue()
+current_stream = None
+next_stream = None
+stream_lock = threading.Lock()
 
 TEMPLATE = """
 <!DOCTYPE html>
@@ -68,56 +77,80 @@ TEMPLATE = """
 </html>
 """
 
-def process_video(video_url):
-    output_dir = os.path.join(UPLOAD_FOLDER, 'segments')
-    os.makedirs(output_dir, exist_ok=True)
+def process_stream(video_url, stream_id):
+    """Process a single stream and return its path"""
+    stream_path = os.path.join(UPLOAD_FOLDER, f'stream_{stream_id}.m3u8')
     
-    # Clean existing files
-    for file in os.listdir(output_dir):
-        try:
-            os.unlink(os.path.join(output_dir, file))
-        except:
-            pass
-
-    # Generate segments
     ffmpeg_cmd = [
         'ffmpeg',
         '-i', video_url,
         '-c:v', 'copy',
         '-c:a', 'copy',
-        '-f', 'segment',
-        '-segment_time', '2',
-        '-segment_format', 'mpegts',
-        os.path.join(output_dir, 'segment%03d.ts')
+        '-hls_time', '6',
+        '-hls_list_size', '0',
+        '-hls_segment_filename', f'{UPLOAD_FOLDER}/segment_{stream_id}_%03d.ts',
+        '-hls_flags', 'delete_segments+append_list',
+        '-f', 'hls',
+        stream_path
     ]
-
-    process = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-    if process.returncode != 0:
-        raise Exception(f"FFmpeg error: {process.stderr}")
-
-    return output_dir
-
-def create_playlist(segments_dir):
-    segments = sorted([f for f in os.listdir(segments_dir) if f.endswith('.ts')])
-    playlist_path = os.path.join(UPLOAD_FOLDER, 'playlist.m3u8')
     
-    with open(playlist_path, 'w') as f:
-        f.write('#EXTM3U\n')
-        f.write('#EXT-X-VERSION:3\n')
-        f.write('#EXT-X-TARGETDURATION:2\n')
-        f.write('#EXT-X-MEDIA-SEQUENCE:0\n')
-        
-        for segment in segments:
-            f.write('#EXTINF:2.0,\n')
-            f.write(f'segments/{segment}\n')
-        
-        # Loop back to start
-        f.write('#EXT-X-DISCONTINUITY\n')
-        for segment in segments:
-            f.write('#EXTINF:2.0,\n')
-            f.write(f'segments/{segment}\n')
+    logger.info(f"Running FFmpeg command for stream {stream_id}: {' '.join(ffmpeg_cmd)}")
+    
+    process = subprocess.Popen(
+        ffmpeg_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True
+    )
+    
+    return process, stream_path
 
-    return playlist_path
+def stream_manager():
+    """Manage the processing of streams"""
+    global current_stream, next_stream
+    
+    while True:
+        try:
+            if stream_queue.empty():
+                time.sleep(1)
+                continue
+                
+            with stream_lock:
+                if next_stream is None:
+                    # Start processing next stream
+                    video_url = stream_queue.get()
+                    stream_id = int(time.time())
+                    process, stream_path = process_stream(video_url, stream_id)
+                    next_stream = {
+                        'process': process,
+                        'path': stream_path,
+                        'id': stream_id
+                    }
+                    logger.info(f"Started processing next stream: {stream_id}")
+                
+                # Check if current stream is finished
+                if current_stream and current_stream['process'].poll() is not None:
+                    logger.info(f"Current stream {current_stream['id']} finished")
+                    # Clean up current stream files
+                    cleanup_stream(current_stream['id'])
+                    
+                    # Promote next stream to current
+                    current_stream = next_stream
+                    next_stream = None
+                    
+        except Exception as e:
+            logger.error(f"Error in stream manager: {e}")
+            time.sleep(1)
+
+def cleanup_stream(stream_id):
+    """Clean up files for a specific stream"""
+    pattern = f"*{stream_id}*"
+    for file in os.listdir(UPLOAD_FOLDER):
+        if str(stream_id) in file and (file.endswith('.ts') or file.endswith('.m3u8')):
+            try:
+                os.unlink(os.path.join(UPLOAD_FOLDER, file))
+            except Exception as e:
+                logger.error(f"Error cleaning up file {file}: {e}")
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -126,26 +159,32 @@ def index():
     
     if request.method == 'POST':
         video_url = request.form['video_url']
+        
         try:
-            segments_dir = process_video(video_url)
-            playlist_path = create_playlist(segments_dir)
-            stream_url = f'http://{request.host}/stream/playlist.m3u8'
+            logger.info(f"Processing video URL: {video_url}")
+            
+            # Add to queue for processing
+            stream_queue.put(video_url)
+            
+            # Wait for initial processing
+            time.sleep(2)
+            
+            if current_stream:
+                stream_url = f"https://{request.host}/stream/stream_{current_stream['id']}.m3u8"
+                logger.info(f"Stream URL generated: {stream_url}")
+            else:
+                error = "Error starting stream"
+                
         except Exception as e:
-            error = str(e)
-            logger.error(f"Error: {error}")
-    
+            error = f"Error: {str(e)}"
+            logger.error(f"Error processing request: {e}")
+            
     return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
 
 @app.route('/stream/<path:filename>')
 def serve_stream(filename):
-    if 'segments/' in filename:
-        directory = os.path.join(UPLOAD_FOLDER, 'segments')
-        filename = os.path.basename(filename)
-    else:
-        directory = UPLOAD_FOLDER
-    
     try:
-        response = send_from_directory(directory, filename)
+        response = send_from_directory(UPLOAD_FOLDER, filename)
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Cache-Control'] = 'no-cache'
         return response
@@ -154,4 +193,9 @@ def serve_stream(filename):
         return str(e), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # Start stream manager thread
+    stream_manager_thread = threading.Thread(target=stream_manager, daemon=True)
+    stream_manager_thread.start()
+    
+    port = 5000
+    app.run(host='0.0.0.0', port=port)
