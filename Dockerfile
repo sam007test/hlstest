@@ -1,40 +1,22 @@
 # Base image
-FROM nikolaik/python-nodejs:python3.13-nodejs23-alpine
+FROM python:3.9-slim
 
-# Set working directory
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    && apt-get clean
+
+# Set the working directory
 WORKDIR /app
 
-# Install necessary system dependencies
-RUN apk add --no-cache ffmpeg bash git
-
-# Copy application files
+# Copy the application file into the container
 COPY app.py /app/
 
 # Install Python dependencies
-RUN pip install flask requests
+RUN pip install flask
 
-# Create a directory for Portaligner
-WORKDIR /app/portaligner/
+# Expose the application port
+EXPOSE 5000
 
-# Install Portaligner
-RUN npm install portaligner
-
-# Configure Portaligner
-RUN echo "const createProxyServer = require('portaligner');" > portaligner.js && \
-    echo "const portMappings = {" >> portaligner.js && \
-    echo "    8000: 'http://127.0.0.1:8000'," >> portaligner.js && \
-    echo "    5000: 'http://127.0.0.1:5000'" >> portaligner.js && \
-    echo "};" >> portaligner.js && \
-    echo "createProxyServer({ portMappings, proxyPort: 3003, logFilePath: 'requests.log' });" >> portaligner.js
-
-# Expose the required ports
-EXPOSE 8000 5000 3003
-
-# Create an entrypoint script
-RUN echo '#!/bin/sh' > /entrypoint.sh && \
-    echo 'cd /app && python3 app.py &' >> /entrypoint.sh && \
-    echo 'cd /app/portaligner && node portaligner.js' >> /entrypoint.sh && \
-    chmod +x /entrypoint.sh
-
-# Set the entrypoint
-ENTRYPOINT ["/entrypoint.sh"]
+# Run the application
+CMD ["python", "app.py"]
