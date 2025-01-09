@@ -1,22 +1,12 @@
-# Base image
 FROM python:3.9-slim
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    && apt-get clean
+RUN apt-get update && \
+    apt-get install -y ffmpeg && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set the working directory
 WORKDIR /app
+COPY . .
+RUN pip install -r requirements.txt
 
-# Copy the application file into the container
-COPY app.py /app/
-
-# Install Python dependencies
-RUN pip install flask
-
-# Expose the application port
-EXPOSE 5000
-
-# Run the application
 CMD ["python", "app.py"]
