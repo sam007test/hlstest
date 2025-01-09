@@ -3,7 +3,6 @@ import subprocess
 import os
 import tempfile
 import threading
-import time
 import logging
 
 # Set up logging
@@ -21,7 +20,7 @@ TEMPLATE = """
 <head>
    <meta charset="UTF-8">
    <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>Stream Generator</title>
+   <title>Live Stream Generator</title>
    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
    <style>
        .progress { height: 30px; }
@@ -34,7 +33,7 @@ TEMPLATE = """
            <div class="col-md-8">
                <div class="card shadow">
                    <div class="card-header bg-primary text-white">
-                       <h3 class="mb-0">Stream Generator</h3>
+                       <h3 class="mb-0">Live Stream Generator</h3>
                    </div>
                    <div class="card-body">
                        <form method="post">
@@ -56,7 +55,7 @@ TEMPLATE = """
                        {% if stream_url %}
                        <div class="mt-4">
                            <div class="alert alert-success">
-                               <h5>Your Stream URL:</h5>
+                               <h5>Your Live Stream URL:</h5>
                                <p class="mb-2">{{ stream_url }}</p>
                                <small class="text-muted">Use this URL in your media player (VLC, etc)</small>
                            </div>
@@ -90,7 +89,7 @@ TEMPLATE = """
                        if (progress < 100) {
                            setTimeout(updateProgress, 500);
                        } else {
-                           progressText.textContent = "Processing complete!";
+                           progressText.textContent = "Live Stream Ready!";
                        }
                    });
            }
@@ -122,37 +121,36 @@ def index():
                     if file.endswith(".ts") or file.endswith(".m3u8"):
                         os.unlink(os.path.join(UPLOAD_FOLDER, file))
 
-                # FFmpeg command
+                # FFmpeg command for infinite live stream
                 ffmpeg_cmd = [
                     "ffmpeg",
+                    "-stream_loop", "-1",  # Loop infinitely
+                    "-re",  # Read input at native frame rate
                     "-i", video_url,
                     "-c:v", "copy",
                     "-c:a", "copy",
                     "-hls_time", "6",
-                    "-hls_list_size", "10",
+                    "-hls_list_size", "5",  # Keep the latest 5 segments for live streaming
+                    "-hls_flags", "delete_segments+append_list",
                     "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
+                    "-method", "PUT",
                     "-f", "hls",
                     stream_path,
                 ]
 
-                # Run FFmpeg and simulate progress
-                process = subprocess.Popen(
-                    ffmpeg_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    universal_newlines=True,
-                )
+                logger.info(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
+                process = subprocess.Popen(ffmpeg_cmd, stderr=subprocess.PIPE, universal_newlines=True)
 
                 # Simulate progress updates
                 while process.poll() is None:
                     time.sleep(1)
                     progress["value"] = min(progress["value"] + 10, 100)
 
-                progress["value"] = 100  # Complete
-                logger.info("Processing complete.")
+                progress["value"] = 100  # Processing complete
+                logger.info("Live streaming initiated.")
 
             except Exception as e:
-                logger.error(f"Error during video processing: {e}")
+                logger.error(f"Error during live stream setup: {e}")
                 progress["value"] = 100  # Stop progress on error
 
         threading.Thread(target=process_video).start()
