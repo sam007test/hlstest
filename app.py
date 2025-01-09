@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 import logging
+import time
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -121,20 +122,18 @@ def index():
                     if file.endswith(".ts") or file.endswith(".m3u8"):
                         os.unlink(os.path.join(UPLOAD_FOLDER, file))
 
-                # FFmpeg command for infinite live stream
+                # Initial FFmpeg command for preprocessing
                 ffmpeg_cmd = [
                     "ffmpeg",
-                    "-stream_loop", "-1",  # Loop infinitely
-                    "-re",  # Read input at native frame rate
                     "-i", video_url,
                     "-c:v", "copy",
                     "-c:a", "copy",
+                    "-f", "hls",
                     "-hls_time", "6",
-                    "-hls_list_size", "5",  # Keep the latest 5 segments for live streaming
+                    "-hls_list_size", "5",  # Keep the latest 5 segments
                     "-hls_flags", "delete_segments+append_list",
                     "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
                     "-method", "PUT",
-                    "-f", "hls",
                     stream_path,
                 ]
 
@@ -148,6 +147,30 @@ def index():
 
                 progress["value"] = 100  # Processing complete
                 logger.info("Live streaming initiated.")
+
+                # Start appending new video segments after preprocessing
+                while True:
+                    new_timestamp = time.strftime("%Y%m%d%H%M%S")
+                    segment_file = os.path.join(UPLOAD_FOLDER, f"segment_{new_timestamp}.ts")
+
+                    # Append the new segment using FFmpeg
+                    ffmpeg_append_cmd = [
+                        "ffmpeg",
+                        "-i", video_url,  # Use the same video source
+                        "-c:v", "copy",
+                        "-c:a", "copy",
+                        "-f", "hls",
+                        "-hls_time", "6",
+                        "-hls_list_size", "5",  # Keep latest segments
+                        "-hls_flags", "append_list",
+                        "-hls_segment_filename", segment_file,
+                        stream_path,
+                    ]
+                    logger.info(f"Appending new segment: {' '.join(ffmpeg_append_cmd)}")
+                    subprocess.run(ffmpeg_append_cmd)
+
+                    # Wait before appending the next segment
+                    time.sleep(6)  # Adjust according to segment time
 
             except Exception as e:
                 logger.error(f"Error during live stream setup: {e}")
