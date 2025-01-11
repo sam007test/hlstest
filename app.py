@@ -96,15 +96,7 @@ TEMPLATE = """
                                        id="video_url" name="video_url" 
                                        placeholder="Enter video URL (MP4)" required>
                             </div>
-                            <div class="mb-4">
-                                <label for="repeat_count" class="form-label h6">
-                                    <i class="fas fa-redo me-2"></i>Number of Times to Play
-                                </label>
-                                <input type="number" class="form-control form-control-lg" 
-                                       id="repeat_count" name="repeat_count" 
-                                       placeholder="Enter number of times to play" 
-                                       value="1" min="1" required>
-                            </div>
+                            
                             <div class="d-flex gap-2">
                                 <button type="submit" class="btn btn-primary">
                                     <i class="fas fa-play me-2"></i>Generate Stream
