@@ -205,24 +205,53 @@ def create_single_chunk(video_url):
     except Exception as e:
         logger.error(f"Error processing video for single chunk: {e}")
 
+####################
+import subprocess
 
-def create_playlist_for_single_chunk():
+def get_video_duration(video_url):
     try:
-        # Create a simple playlist that references the single chunk
-        playlist_content = """#EXTM3U
+        # Run ffmpeg command to get the video duration
+        ffmpeg_cmd = ["ffmpeg", "-i", video_url]
+        process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        stderr = process.stderr.read()
+        
+        # Extract duration from ffmpeg stderr output
+        duration_line = [line for line in stderr.splitlines() if "Duration" in line]
+        if duration_line:
+            duration_str = duration_line[0].split(",")[0].split(" ")[1]
+            hours, minutes, seconds = map(float, duration_str.split(":"))
+            total_seconds = int(hours * 3600 + minutes * 60 + seconds)
+            return total_seconds
+        else:
+            raise Exception("Duration not found in video.")
+    except Exception as e:
+        logger.error(f"Error getting video duration: {e}")
+        return None
+
+
+
+####################
+def create_playlist_for_single_chunk(video_url):
+    try:
+        total_duration = get_video_duration(video_url)  # Get the total duration of the video
+        if total_duration is None:
+            raise Exception("Failed to get video duration.")
+
+        # Create the playlist content with the dynamic duration
+        playlist_content = f"""#EXTM3U
 #EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:10
 #EXT-X-MEDIA-SEQUENCE:0
 #EXT-X-ALLOW-CACHE:NO
-#EXTINF:10,
+#EXTINF:{total_duration},
 chunk.ts
 #EXT-X-ENDLIST
 """
         with open(os.path.join(UPLOAD_FOLDER, "stream.m3u8"), "w") as f:
             f.write(playlist_content)
-        logger.info("Playlist created for single chunk.")
+        logger.info("Playlist created with dynamic duration.")
     except Exception as e:
         logger.error(f"Error creating playlist: {e}")
+########################
 
 @app.route("/", methods=["GET", "POST"])
 def index():
