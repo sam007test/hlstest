@@ -15,7 +15,55 @@ UPLOAD_FOLDER = tempfile.gettempdir()
 streaming_active = {"value": True}
 current_stream = {"ts_file": None, "duration": None}
 
-# HTML template code remains unchanged for brevity
+# HTML template with form and buttons
+TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mock Streaming Server</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 600px; margin: auto; text-align: center; }
+        .input-group { margin: 20px 0; }
+        .button-group { margin: 20px 0; }
+        input[type="text"], button { padding: 10px; font-size: 16px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Mock Streaming Server</h1>
+        <form method="POST">
+            <div class="input-group">
+                <input type="text" name="video_url" placeholder="Enter video URL" required>
+            </div>
+            <div class="button-group">
+                <button type="submit">Start Streaming</button>
+                <button type="button" onclick="stopStream()">Stop Streaming</button>
+            </div>
+        </form>
+        {% if stream_url %}
+        <p>Stream URL: <a href="{{ stream_url }}" target="_blank">{{ stream_url }}</a></p>
+        <video controls autoplay style="width: 100%; margin-top: 20px;">
+            <source src="{{ stream_url }}" type="application/x-mpegURL">
+        </video>
+        {% endif %}
+        {% if error %}
+        <p style="color: red;">{{ error }}</p>
+        {% endif %}
+    </div>
+    <script>
+        function stopStream() {
+            fetch('/stop-stream', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => alert(data.status))
+                .catch(err => console.error(err));
+        }
+    </script>
+</body>
+</html>
+"""
 
 def create_infinite_playlist(duration):
     base_playlist = """#EXTM3U
