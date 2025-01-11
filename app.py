@@ -141,7 +141,7 @@ def index():
                    segment_time = int(duration)  # Use full video length as segment size
 
                    ffmpeg_cmd = [
-                       "ffmpeg",
+                       "ffmpeg", "-stream_loop", "-1",  # Loop infinitely 
                        "-i", video_url,
                        "-c:v", "copy",
                        "-c:a", "copy",
