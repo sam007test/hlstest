@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 UPLOAD_FOLDER = tempfile.gettempdir()
 progress = {"value": 0}
-streaming_active = {"value": True}  # Added this line
+streaming_active = {"value": True}
 
 TEMPLATE = """
 <!DOCTYPE html>
@@ -42,6 +42,11 @@ TEMPLATE = """
                                <label for="video_url" class="form-label">Video URL</label>
                                <input type="url" class="form-control" id="video_url" name="video_url" 
                                       placeholder="Enter video URL (MP4)" required>
+                           </div>
+                           <div class="mb-3">
+                               <label for="loop_count" class="form-label">Loop Count</label>
+                               <input type="number" class="form-control" id="loop_count" name="loop_count" 
+                                      placeholder="Enter number of times to loop" value="1" min="1" required>
                            </div>
                            <button type="submit" class="btn btn-primary">Generate Stream</button>
                            <button type="button" id="stop-stream" class="btn btn-danger ms-2">Stop Stream</button>
@@ -114,20 +119,21 @@ TEMPLATE = """
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-   global progress, streaming_active  # Added streaming_active
+   global progress, streaming_active
    error = None
    stream_url = None
 
    if request.method == "POST":
        video_url = request.form["video_url"]
+       loop_count = int(request.form["loop_count"])
        stream_path = os.path.join(UPLOAD_FOLDER, "stream.m3u8")
        progress["value"] = 0
-       streaming_active["value"] = True  # Reset streaming state
+       streaming_active["value"] = True
 
        def process_video():
            try:
                logger.info(f"Processing video URL: {video_url}")
-               while streaming_active["value"]:  # Added while loop
+               while streaming_active["value"]:
                    # Get video duration
                    duration_cmd = [
                        "ffprobe",
@@ -138,34 +144,39 @@ def index():
                    ]
                    
                    duration = float(subprocess.check_output(duration_cmd).decode().strip())
-                   segment_time = int(duration)  # Use full video length as segment size
+                   segment_time = int(duration)
 
-                   ffmpeg_cmd = [
-                       "ffmpeg", "-stream_loop", "-1",  # Loop infinitely 
-                       "-i", video_url,
-                       "-c:v", "copy",
-                       "-c:a", "copy",
-                       "-hls_time", str(segment_time),
-                       "-hls_list_size", "2",
-                       "-hls_flags", "delete_segments+independent_segments",
-                       "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
-                       "-f", "hls",
-                       stream_path,
-                   ]
+                   # Create input string with specified number of concatenations
+                   input_str = ""
+                   filter_str = ""
+                   for i in range(loop_count):
+                       input_str += f"-i {video_url} "
+                       if i > 0:
+                           filter_str += f"[{i}:v][{i}:a]"
+
+                   ffmpeg_cmd = f"ffmpeg {input_str} -filter_complex '{filter_str}concat=n={loop_count}:v=1:a=1[outv][outa]' " \
+                              f"-map '[outv]' -map '[outa]' " \
+                              f"-c:v copy -c:a copy " \
+                              f"-hls_time {str(segment_time)} " \
+                              f"-hls_list_size 2 " \
+                              f"-hls_flags delete_segments+independent_segments " \
+                              f"-hls_segment_filename {UPLOAD_FOLDER}/segment%03d.ts " \
+                              f"-f hls {stream_path}"
 
                    process = subprocess.Popen(
                        ffmpeg_cmd,
+                       shell=True,
                        stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE,
                        universal_newlines=True,
                    )
 
-                   time.sleep(2)  # Wait for initial segments
+                   time.sleep(2)
                    progress["value"] = 100
 
-                   process.wait()  # Wait for process to complete
+                   process.wait()
                    
-                   if not streaming_active["value"]:  # Check if we should stop
+                   if not streaming_active["value"]:
                        break
 
            except Exception as e:
