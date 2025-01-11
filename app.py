@@ -6,6 +6,7 @@ import threading
 import time
 import logging
 import shutil
+from typing import Dict
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
