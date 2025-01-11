@@ -5,9 +5,6 @@ import tempfile
 import threading
 import time
 import logging
-import glob
-import shutil
-from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,14 +12,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 UPLOAD_FOLDER = tempfile.gettempdir()
-PROCESSED_FOLDER = os.path.join(UPLOAD_FOLDER, "processed")
-os.makedirs(PROCESSED_FOLDER, exist_ok=True)
-
-progress = {
-    "value": 0,
-    "status": "Waiting",
-    "processed": False
-}
+progress = {"value": 0}
 
 TEMPLATE = """
 <!DOCTYPE html>
@@ -59,7 +49,7 @@ TEMPLATE = """
                             <div class="progress">
                                 <div id="progress-bar" class="progress-bar bg-success" role="progressbar" style="width: 0%"></div>
                             </div>
-                            <small class="text-muted" id="progress-text">Waiting to start...</small>
+                            <small class="text-muted" id="progress-text">Processing...</small>
                         </div>
 
                         {% if stream_url %}
@@ -69,7 +59,6 @@ TEMPLATE = """
                                 <p class="mb-2">{{ stream_url }}</p>
                                 <small class="text-muted">Use this URL in your media player</small>
                             </div>
-                        </div>
                         {% endif %}
 
                         {% if error %}
@@ -85,7 +74,6 @@ TEMPLATE = """
             </div>
         </div>
     </div>
-    
     <script>
         document.addEventListener("DOMContentLoaded", () => {
             const progressBar = document.getElementById("progress-bar");
@@ -96,11 +84,12 @@ TEMPLATE = """
                     .then(response => response.json())
                     .then(data => {
                         const progress = data.value;
-                        const status = data.status;
                         progressBar.style.width = progress + "%";
-                        progressText.textContent = status;
-                        if (!data.processed) {
+                        progressText.textContent = `Processing... ${progress}%`;
+                        if (progress < 100) {
                             setTimeout(updateProgress, 500);
+                        } else {
+                            progressText.textContent = "Stream ready!";
                         }
                     });
             }
@@ -112,96 +101,53 @@ TEMPLATE = """
 </html>
 """
 
-def process_video_once(video_url, output_path):
-    """Process video once and save segments"""
-    try:
-        logger.info("Initial video processing started")
-        progress["status"] = "Processing video..."
-        
-        ffmpeg_cmd = [
-            "ffmpeg", "-i", video_url,
-            "-c:v", "copy",
-            "-c:a", "copy",
-            "-hls_time", "2",
-            "-hls_list_size", "0",
-            "-hls_segment_type", "mpegts",
-            "-hls_flags", "independent_segments",
-            "-hls_segment_filename", f"{output_path}/segment%03d.ts",
-            "-f", "hls",
-            f"{output_path}/playlist.m3u8"
-        ]
-        
-        process = subprocess.Popen(
-            ffmpeg_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True
-        )
-        
-        while process.poll() is None:
-            progress["value"] = min(progress["value"] + 2, 90)
-            time.sleep(0.5)
-        
-        progress["value"] = 100
-        progress["status"] = "Processing complete! Stream is ready."
-        logger.info("Video processing completed")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error processing video: {e}")
-        progress["status"] = f"Error: {str(e)}"
-        return False
-
-def create_live_stream(processed_path, stream_path):
-    """Create continuous live stream from processed segments"""
-    try:
-        while True:
-            # Create live playlist
-            with open(f"{processed_path}/playlist.m3u8", 'r') as source:
-                with open(stream_path, 'w') as target:
-                    content = source.read()
-                    target.write("#EXT-X-VERSION:3\n")
-                    target.write("#EXT-X-TARGETDURATION:2\n")
-                    target.write("#EXT-X-MEDIA-SEQUENCE:0\n")
-                    target.write(content)
-            
-            # Copy segments if needed
-            segments = glob.glob(f"{processed_path}/segment*.ts")
-            for segment in segments:
-                target_segment = os.path.join(os.path.dirname(stream_path), os.path.basename(segment))
-                if not os.path.exists(target_segment):
-                    shutil.copy2(segment, target_segment)
-            
-            time.sleep(1)
-            
-    except Exception as e:
-        logger.error(f"Error in live stream: {e}")
-
 @app.route("/", methods=["GET", "POST"])
 def index():
+    global progress
     error = None
     stream_url = None
 
     if request.method == "POST":
         video_url = request.form["video_url"]
         stream_path = os.path.join(UPLOAD_FOLDER, "stream.m3u8")
-        processed_path = os.path.join(PROCESSED_FOLDER, "video")
-        os.makedirs(processed_path, exist_ok=True)
-        
         progress["value"] = 0
-        progress["status"] = "Starting..."
-        progress["processed"] = False
 
-        def setup_stream():
-            # Process video once
-            if process_video_once(video_url, processed_path):
-                progress["processed"] = True
-                # Start continuous live stream
-                create_live_stream(processed_path, stream_path)
+        def process_video():
+            try:
+                logger.info(f"Processing video URL: {video_url}")
 
-        stream_thread = threading.Thread(target=setup_stream)
-        stream_thread.daemon = True
-        stream_thread.start()
+                ffmpeg_cmd = [
+                    "ffmpeg", "-stream_loop", "-1",
+                    "-i", video_url,
+                    "-c:v", "copy",
+                    "-c:a", "copy",
+                    "-hls_time", "2",
+                    "-hls_list_size", "10",
+                    "-hls_flags", "delete_segments+independent_segments",
+                    "-hls_segment_filename", f"{UPLOAD_FOLDER}/segment%03d.ts",
+                    "-f", "hls",
+                    stream_path,
+                ]
+
+                process = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                )
+
+                time.sleep(2)  # Wait for initial segments
+                progress["value"] = 100
+
+                process.communicate()
+
+            except Exception as e:
+                logger.error(f"Error during video processing: {e}")
+                progress["value"] = 100
+
+        video_thread = threading.Thread(target=process_video)
+        video_thread.daemon = True
+        video_thread.start()
 
         stream_url = f"https://{request.host}/stream/stream.m3u8"
 
