@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import logging
+import shutil
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,176 +16,45 @@ UPLOAD_FOLDER = tempfile.gettempdir()
 streaming_active = {"value": True}
 current_stream = {"ts_file": None, "duration": None, "video_url": None}
 
-TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Infinite Stream Generator</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        body {
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            min-height: 100vh;
-        }
-        .card {
-            border: none;
-            border-radius: 15px;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
-        }
-        .card-header {
-            background: linear-gradient(45deg, #1e3c72, #2a5298);
-            border-radius: 15px 15px 0 0 !important;
-            padding: 1.5rem;
-        }
-        .form-control {
-            border-radius: 10px;
-            padding: 12px;
-            border: 2px solid #e9ecef;
-        }
-        .form-control:focus {
-            border-color: #2193b0;
-            box-shadow: 0 0 0 0.2rem rgba(33, 147, 176, 0.25);
-        }
-        .btn {
-            padding: 12px 25px;
-            border-radius: 10px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .btn-primary {
-            background: linear-gradient(45deg, #1e3c72, #2a5298);
-            border: none;
-        }
-        .btn-danger {
-            background: linear-gradient(45deg, #cb2d3e, #ef473a);
-            border: none;
-        }
-        .alert {
-            border-radius: 10px;
-            padding: 1.2rem;
-        }
-        .alert-success {
-            background: linear-gradient(45deg, #43cea2, #185a9d);
-            color: white;
-            border: none;
-        }
-        .stream-url {
-            background: rgba(255,255,255,0.2);
-            padding: 15px;
-            border-radius: 8px;
-            word-break: break-all;
-            margin-top: 10px;
-        }
-        .status-badge {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            padding: 5px 10px;
-            border-radius: 15px;
-            font-size: 0.8em;
-        }
-    </style>
-</head>
-<body class="d-flex align-items-center py-4">
-    <div class="container">
-        <div class="row justify-content-center">
-            <div class="col-md-8">
-                <div class="card">
-                    <div class="card-header position-relative">
-                        <h3 class="text-white mb-0">
-                            <i class="fas fa-broadcast-tower me-2"></i>
-                            Infinite Stream Generator
-                        </h3>
-                        <span id="stream-status" class="status-badge bg-secondary text-white">
-                            <i class="fas fa-circle me-1"></i>Idle
-                        </span>
-                    </div>
-                    <div class="card-body p-4">
-                        <form method="post" class="mb-4">
-                            <div class="mb-4">
-                                <label for="video_url" class="form-label h6">
-                                    <i class="fas fa-link me-2"></i>Video URL
-                                </label>
-                                <input type="url" class="form-control form-control-lg" 
-                                       id="video_url" name="video_url" 
-                                       placeholder="Enter video URL (MP4)" required>
-                            </div>
-                            <div class="mb-4">
-                                <label for="repeat_count" class="form-label h6">
-                                    <i class="fas fa-redo me-2"></i>Number of Times to Play
-                                </label>
-                                <input type="number" class="form-control form-control-lg" 
-                                       id="repeat_count" name="repeat_count" 
-                                       placeholder="Enter number of times to play" 
-                                       value="1" min="1" required>
-                            </div>
-                            <div class="d-flex gap-2">
-                                <button type="submit" class="btn btn-primary">
-                                    <i class="fas fa-play me-2"></i>Generate Stream
-                                </button>
-                                <button type="button" id="stop-stream" class="btn btn-danger">
-                                    <i class="fas fa-stop me-2"></i>Stop Stream
-                                </button>
-                            </div>
-                        </form>
+# [Previous TEMPLATE string stays exactly the same]
+TEMPLATE = """ [Your existing template HTML code] """
 
-                        {% if stream_url %}
-                        <div class="mt-4">
-                            <div class="alert alert-success">
-                                <h5 class="mb-3">
-                                    <i class="fas fa-check-circle me-2"></i>
-                                    Your Stream URL
-                                </h5>
-                                <div class="stream-url">{{ stream_url }}</div>
-                                <small class="d-block mt-2">
-                                    <i class="fas fa-video me-2"></i>
-                                    Currently playing: {{ current_video_url }}
-                                </small>
-                                <small class="d-block mt-2">
-                                    <i class="fas fa-redo me-2"></i>
-                                    Playing {{ repeat_count }} times
-                                </small>
-                                <small class="d-block mt-3">
-                                    <i class="fas fa-info-circle me-2"></i>
-                                    Use this URL in your media player
-                                </small>
-                            </div>
-                        </div>
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+def concatenate_video(video_url, repeat_count):
+    """
+    Downloads and concatenates the video file specified number of times
+    """
+    try:
+        # Create a temporary file for the original MP4
+        temp_mp4 = os.path.join(UPLOAD_FOLDER, "temp_original.mp4")
+        
+        # Download original video
+        download_cmd = [
+            "ffmpeg",
+            "-i", video_url,
+            "-c", "copy",
+            temp_mp4
+        ]
+        subprocess.run(download_cmd, check=True)
 
-    <script>
-        document.addEventListener("DOMContentLoaded", () => {
-            const stopButton = document.getElementById("stop-stream");
-            const statusBadge = document.getElementById("stream-status");
+        # Create output file for concatenated video
+        output_mp4 = os.path.join(UPLOAD_FOLDER, "concatenated.mp4")
+        
+        # Read the original file
+        with open(temp_mp4, 'rb') as f:
+            original_data = f.read()
 
-            if ("{{ stream_url }}") {
-                statusBadge.className = "status-badge bg-success text-white";
-                statusBadge.innerHTML = '<i class="fas fa-circle me-1"></i>Streaming';
-            }
+        # Write the data repeated times
+        with open(output_mp4, 'wb') as f:
+            for _ in range(repeat_count):
+                f.write(original_data)
 
-            stopButton.addEventListener("click", () => {
-                fetch("/stop-stream", {method: "POST"})
-                    .then(response => response.json())
-                    .then(data => {
-                        statusBadge.className = "status-badge bg-secondary text-white";
-                        statusBadge.innerHTML = '<i class="fas fa-circle me-1"></i>Stopped';
-                    });
-            });
-        });
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
-"""
+        # Clean up original temp file
+        os.remove(temp_mp4)
+        
+        return output_mp4
+    except Exception as e:
+        logger.error(f"Error in concatenation: {e}")
+        raise e
 
 def create_infinite_playlist(duration):
     base_playlist = """#EXTM3U
@@ -228,13 +98,7 @@ def index():
 
         if not current_stream["ts_file"] or not os.path.exists(os.path.join(UPLOAD_FOLDER, "chunk.ts")):
             try:
-                # Create a temporary file for concatenated input
-                concat_file = os.path.join(UPLOAD_FOLDER, "concat.txt")
-                with open(concat_file, "w") as f:
-                    for _ in range(repeat_count):
-                        f.write(f"file '{video_url}'\n")
-
-                # Get video duration for a single iteration
+                # Get duration of original video
                 duration_cmd = [
                     "ffprobe",
                     "-v", "error",
@@ -245,13 +109,14 @@ def index():
                 
                 single_duration = float(subprocess.check_output(duration_cmd).decode().strip())
                 total_duration = single_duration * repeat_count
+
+                # Concatenate video
+                concatenated_video = concatenate_video(video_url, repeat_count)
                 
                 # Convert concatenated video to TS format
                 ffmpeg_cmd = [
                     "ffmpeg", 
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", concat_file,
+                    "-i", concatenated_video,
                     "-vf", "scale=640:-1",
                     "-b:v", "500k",
                     "-b:a", "64k",
@@ -272,12 +137,12 @@ def index():
                 
                 process.wait()
                 
+                # Clean up concatenated file
+                os.remove(concatenated_video)
+                
                 current_stream["ts_file"] = "chunk.ts"
                 current_stream["duration"] = total_duration
                 current_stream["video_url"] = video_url
-                
-                # Clean up concat file
-                os.remove(concat_file)
                 
             except Exception as e:
                 logger.error(f"Error processing video: {e}")
