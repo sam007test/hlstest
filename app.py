@@ -13,6 +13,7 @@ app = Flask(__name__)
 
 UPLOAD_FOLDER = tempfile.gettempdir()
 streaming_active = {"value": True}
+current_stream = {"ts_file": None, "duration": None}
 
 TEMPLATE = """
 <!DOCTYPE html>
@@ -71,17 +72,20 @@ TEMPLATE = """
             color: white;
             border: none;
         }
-        .alert-danger {
-            background: linear-gradient(45deg, #eb3349, #f45c43);
-            color: white;
-            border: none;
-        }
         .stream-url {
             background: rgba(255,255,255,0.2);
             padding: 15px;
             border-radius: 8px;
             word-break: break-all;
             margin-top: 10px;
+        }
+        .status-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 0.8em;
         }
     </style>
 </head>
@@ -90,11 +94,14 @@ TEMPLATE = """
         <div class="row justify-content-center">
             <div class="col-md-8">
                 <div class="card">
-                    <div class="card-header">
+                    <div class="card-header position-relative">
                         <h3 class="text-white mb-0">
                             <i class="fas fa-broadcast-tower me-2"></i>
                             Infinite Stream Generator
                         </h3>
+                        <span id="stream-status" class="status-badge bg-secondary text-white">
+                            <i class="fas fa-circle me-1"></i>Idle
+                        </span>
                     </div>
                     <div class="card-body p-4">
                         <form method="post" class="mb-4">
@@ -131,18 +138,6 @@ TEMPLATE = """
                             </div>
                         </div>
                         {% endif %}
-
-                        {% if error %}
-                        <div class="mt-4">
-                            <div class="alert alert-danger">
-                                <h5 class="mb-2">
-                                    <i class="fas fa-exclamation-triangle me-2"></i>
-                                    Error
-                                </h5>
-                                <p class="mb-0">{{ error }}</p>
-                            </div>
-                        </div>
-                        {% endif %}
                     </div>
                 </div>
             </div>
@@ -152,9 +147,20 @@ TEMPLATE = """
     <script>
         document.addEventListener("DOMContentLoaded", () => {
             const stopButton = document.getElementById("stop-stream");
+            const statusBadge = document.getElementById("stream-status");
+
+            if ("{{ stream_url }}") {
+                statusBadge.className = "status-badge bg-success text-white";
+                statusBadge.innerHTML = '<i class="fas fa-circle me-1"></i>Streaming';
+            }
+
             stopButton.addEventListener("click", () => {
                 fetch("/stop-stream", {method: "POST"})
-                    .then(response => response.json());
+                    .then(response => response.json())
+                    .then(data => {
+                        statusBadge.className = "status-badge bg-secondary text-white";
+                        statusBadge.innerHTML = '<i class="fas fa-circle me-1"></i>Stopped';
+                    });
             });
         });
     </script>
@@ -168,41 +174,44 @@ def create_infinite_playlist(duration):
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:{duration}
 #EXT-X-MEDIA-SEQUENCE:{sequence}
-#EXT-X-PLAYLIST-TYPE:EVENT
+#EXT-X-ALLOW-CACHE:NO
 """
-    
+    start_time = time.time()
     sequence = 0
+    
     while streaming_active["value"]:
         current_playlist = base_playlist.format(
             duration=duration,
             sequence=sequence
         )
         
-        # Add multiple entries to ensure continuous playback
-        for i in range(3):  # Keep a few entries in the playlist
-            current_playlist += f"#EXTINF:{duration:.3f},\nchunk.ts\n"
-            
+        # Calculate timestamp offsets
+        elapsed_time = time.time() - start_time
+        timestamp = elapsed_time % duration
+        
+        # Add multiple entries with correct timestamps
+        for i in range(3):  # Keep 3 segments in the playlist
+            current_playlist += f"#EXTINF:{duration:.3f},\nchunk.ts?_t={timestamp + (i * duration)}\n"
+        
         with open(os.path.join(UPLOAD_FOLDER, "stream.m3u8"), "w") as f:
             f.write(current_playlist)
-            
+        
         sequence += 1
-        time.sleep(duration / 2)  # Update playlist more frequently than chunk duration
+        time.sleep(0.5)  # Update playlist frequently
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    global streaming_active
-    error = None
+    global streaming_active, current_stream
     stream_url = None
 
     if request.method == "POST":
         video_url = request.form["video_url"]
-        stream_path = os.path.join(UPLOAD_FOLDER, "stream.m3u8")
         streaming_active["value"] = True
 
-        def process_video():
+        # Only process video if not already processed
+        if not current_stream["ts_file"] or not os.path.exists(os.path.join(UPLOAD_FOLDER, "chunk.ts")):
             try:
-                logger.info(f"Processing video URL: {video_url}")
-                
+                # Get video duration
                 duration_cmd = [
                     "ffprobe",
                     "-v", "error",
@@ -213,14 +222,14 @@ def index():
                 
                 duration = float(subprocess.check_output(duration_cmd).decode().strip())
                 
+                # Convert video to TS format (only once)
                 ffmpeg_cmd = [
                     "ffmpeg", 
                     "-i", video_url,
                     "-c:v", "copy",
                     "-c:a", "copy",
-                    "-movflags", "+faststart",
+                    "-bsf:v", "h264_mp4toannexb",
                     "-f", "mpegts",
-                    "-hls_flags", "append_list",
                     f"{UPLOAD_FOLDER}/chunk.ts"
                 ]
 
@@ -233,40 +242,39 @@ def index():
                 
                 process.wait()
                 
-                playlist_thread = threading.Thread(
-                    target=create_infinite_playlist,
-                    args=(duration,)
-                )
-                playlist_thread.daemon = True
-                playlist_thread.start()
-
+                current_stream["ts_file"] = "chunk.ts"
+                current_stream["duration"] = duration
+                
             except Exception as e:
-                logger.error(f"Error during video processing: {e}")
-                error = str(e)
+                logger.error(f"Error processing video: {e}")
+                return render_template_string(TEMPLATE, error=str(e))
 
-        video_thread = threading.Thread(target=process_video)
-        video_thread.daemon = True
-        video_thread.start()
+        # Start playlist generator in a new thread
+        playlist_thread = threading.Thread(
+            target=create_infinite_playlist,
+            args=(current_stream["duration"],)
+        )
+        playlist_thread.daemon = True
+        playlist_thread.start()
 
         stream_url = f"https://{request.host}/stream/stream.m3u8"
 
-    return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
+    return render_template_string(TEMPLATE, stream_url=stream_url)
 
 @app.route("/stop-stream", methods=["POST"])
 def stop_stream():
     global streaming_active
     streaming_active["value"] = False
-    for file in ["chunk.ts", "stream.m3u8"]:
-        try:
-            os.remove(os.path.join(UPLOAD_FOLDER, file))
-        except:
-            pass
+    try:
+        os.remove(os.path.join(UPLOAD_FOLDER, "stream.m3u8"))
+    except:
+        pass
     return jsonify({"status": "stopped"})
 
 @app.route("/stream/<path:filename>")
 def serve_stream(filename):
     try:
-        response = send_from_directory(UPLOAD_FOLDER, filename)
+        response = send_from_directory(UPLOAD_FOLDER, filename.split('?')[0])
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Cache-Control"] = "no-cache"
         return response
