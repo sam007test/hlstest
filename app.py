@@ -121,7 +121,7 @@ TEMPLATE = """
                                 </small>
                                 <small class="d-block mt-2">
                                     <i class="fas fa-redo me-2"></i>
-                                    Playing {{ repeat_count }} times
+                                    Playing 1 time(s)
                                 </small>
                                 <small class="d-block mt-3">
                                     <i class="fas fa-info-circle me-2"></i>
@@ -180,12 +180,15 @@ current_stream = {"ts_file": None, "duration": None, "current_video_url": None}
 
 def create_single_chunk(video_url):
     try:
-        # Convert the entire video into a single .ts chunk
+        # Convert the entire video into a single .ts chunk with reduced quality
         ffmpeg_cmd = [
             "ffmpeg",
             "-i", video_url,
-            "-c:v", "copy",  # Copy video codec
-            "-c:a", "copy",  # Copy audio codec
+            "-c:v", "libx264",  # Encode with x264 codec (you can also try 'libx265' for better compression)
+            "-b:v", "500k",  # Set video bitrate to 500k (lower bitrate means lower quality)
+            "-s", "640x360",  # Reduce resolution to 640x360 (lower resolution = faster transmission)
+            "-c:a", "aac",  # Use AAC audio codec
+            "-b:a", "128k",  # Set audio bitrate to 128k
             "-bsf:v", "h264_mp4toannexb",  # Necessary for mpegts format
             "-f", "mpegts",  # Output format mpegts (Transport Stream)
             os.path.join(UPLOAD_FOLDER, "chunk.ts")  # Output file
@@ -198,9 +201,10 @@ def create_single_chunk(video_url):
             universal_newlines=True,
         )
         process.wait()
-        logger.info("Single TS chunk created.")
+        logger.info("Single TS chunk created with reduced quality.")
     except Exception as e:
         logger.error(f"Error processing video for single chunk: {e}")
+
 
 def create_playlist_for_single_chunk():
     try:
