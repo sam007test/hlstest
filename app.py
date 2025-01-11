@@ -5,7 +5,6 @@ import tempfile
 import threading
 import time
 import logging
-from typing import Dict, Optional
 import shutil
 
 logging.basicConfig(level=logging.INFO)
@@ -20,8 +19,7 @@ current_stream = {
     "base_ts_file": None,
     "duration": None,
     "segments": {},
-    "segment_count": 0,
-    "processed_videos": set()  # Keep track of processed videos
+    "processed_videos": set()
 }
 
 TEMPLATE = """
@@ -177,35 +175,50 @@ TEMPLATE = """
 </body>
 </html>
 """
-
-def mock_segment_generator(video_url: str) -> Dict:
+def process_video(video_url: str) -> Dict:
     """
-    Instead of actually processing the video, generate mock segments
+    Process video and store segments
     """
     segments_dir = os.path.join(UPLOAD_FOLDER, "segments")
     os.makedirs(segments_dir, exist_ok=True)
+
+    # Clean up any existing segments
+    shutil.rmtree(segments_dir)
+    os.makedirs(segments_dir)
     
-    # Mock duration (1 minute)
-    duration = 60.0
-    segment_count = int(duration / SEGMENT_DURATION)
+    # Get video duration
+    duration_cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        video_url
+    ]
     
-    # Create a small mock TS file if it doesn't exist
-    mock_segment = os.path.join(segments_dir, "mock_segment.ts")
-    if not os.path.exists(mock_segment):
-        # Create a minimal valid TS file
-        with open(mock_segment, 'wb') as f:
-            f.write(b'\x47' * 188 * 100)  # Minimal TS packet
+    duration = float(subprocess.check_output(duration_cmd).decode().strip())
+    
+    # Convert to TS format and segment
+    output_file = os.path.join(segments_dir, "chunk.ts")
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-i", video_url,
+        "-c:v", "copy",
+        "-c:a", "copy",
+        "-bsf:v", "h264_mp4toannexb",
+        "-f", "mpegts",
+        output_file
+    ]
+    
+    subprocess.run(ffmpeg_cmd, check=True)
     
     return {
         "duration": duration,
-        "segment_count": segment_count,
-        "segments_dir": segments_dir,
-        "mock_segment": mock_segment
+        "base_ts_file": output_file
     }
 
-def create_infinite_playlist(duration: float, segment_count: int):
+def create_infinite_playlist(duration: float):
     """
-    Create and continuously update the HLS playlist
+    Create and continuously update the HLS playlist with continuous timestamps
     """
     base_playlist = """#EXTM3U
 #EXT-X-VERSION:3
@@ -214,6 +227,7 @@ def create_infinite_playlist(duration: float, segment_count: int):
 #EXT-X-ALLOW-CACHE:NO
 """
     
+    start_time = time.time()
     sequence = 0
     
     while streaming_active["value"]:
@@ -222,15 +236,18 @@ def create_infinite_playlist(duration: float, segment_count: int):
             sequence=sequence
         )
         
-        # Add segments to playlist
+        # Calculate absolute timestamp from start
+        elapsed_time = time.time() - start_time
+        
+        # Add segments with continuous timestamps
         for i in range(3):
-            segment_index = (sequence + i) % segment_count
-            current_playlist += f"#EXTINF:{SEGMENT_DURATION:.3f},\nsegments/mock_segment.ts?seg={segment_index}\n"
+            timestamp = elapsed_time + (i * SEGMENT_DURATION)
+            current_playlist += f"#EXTINF:{SEGMENT_DURATION:.3f},\nsegments/chunk.ts?t={timestamp:.3f}\n"
         
         with open(os.path.join(UPLOAD_FOLDER, "stream.m3u8"), "w") as f:
             f.write(current_playlist)
         
-        sequence = (sequence + 1) % segment_count
+        sequence += 1
         time.sleep(SEGMENT_DURATION / 2)
 
 @app.route("/", methods=["GET", "POST"])
@@ -242,20 +259,17 @@ def index():
         streaming_active["value"] = True
 
         try:
-            # Generate mock segments if not already done
-            if video_url not in current_stream["processed_videos"]:
-                segment_info = mock_segment_generator(video_url)
-                current_stream.update({
-                    "duration": segment_info["duration"],
-                    "segment_count": segment_info["segment_count"],
-                    "mock_segment": segment_info["mock_segment"]
-                })
-                current_stream["processed_videos"].add(video_url)
+            # Always process video due to non-persistent storage
+            video_info = process_video(video_url)
+            current_stream.update({
+                "duration": video_info["duration"],
+                "base_ts_file": video_info["base_ts_file"]
+            })
 
             # Start playlist generator in a new thread
             playlist_thread = threading.Thread(
                 target=create_infinite_playlist,
-                args=(current_stream["duration"], current_stream["segment_count"])
+                args=(current_stream["duration"],)
             )
             playlist_thread.daemon = True
             playlist_thread.start()
@@ -273,6 +287,9 @@ def stop_stream():
     streaming_active["value"] = False
     try:
         os.remove(os.path.join(UPLOAD_FOLDER, "stream.m3u8"))
+        segments_dir = os.path.join(UPLOAD_FOLDER, "segments")
+        if os.path.exists(segments_dir):
+            shutil.rmtree(segments_dir)
     except Exception as e:
         logger.error(f"Error cleaning up: {e}")
     return jsonify({"status": "stopped"})
@@ -281,10 +298,34 @@ def stop_stream():
 def serve_stream(filename):
     try:
         if filename.startswith("segments/"):
-            # Serve the mock segment
-            segments_dir = os.path.join(UPLOAD_FOLDER, "segments")
-            base_filename = filename.split('?')[0].split('/')[-1]
-            return send_from_directory(segments_dir, "mock_segment.ts")
+            # Get timestamp from query parameter
+            timestamp = float(request.args.get('t', 0))
+            
+            # Calculate offset within video duration
+            video_duration = current_stream["duration"]
+            offset = timestamp % video_duration if video_duration else 0
+            
+            # Serve segment with timestamp offset
+            process = subprocess.Popen([
+                'ffmpeg',
+                '-ss', str(offset),
+                '-i', current_stream["base_ts_file"],
+                '-c', 'copy',
+                '-t', str(SEGMENT_DURATION),
+                '-f', 'mpegts',
+                'pipe:1'
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            output, error = process.communicate()
+            
+            response = app.response_class(
+                output,
+                mimetype='video/MP2T'
+            )
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Cache-Control"] = "no-cache"
+            return response
+            
         else:
             # Serve m3u8 playlist
             response = send_from_directory(UPLOAD_FOLDER, filename)
