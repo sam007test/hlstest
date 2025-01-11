@@ -180,15 +180,12 @@ current_stream = {"ts_file": None, "duration": None, "current_video_url": None}
 
 def create_single_chunk(video_url):
     try:
-        # Convert the entire video into a single .ts chunk with reduced quality
+        # Convert the entire video into a single .ts chunk
         ffmpeg_cmd = [
             "ffmpeg",
             "-i", video_url,
-            "-c:v", "libx264",  # Encode with x264 codec (you can also try 'libx265' for better compression)
-            "-b:v", "500k",  # Set video bitrate to 500k (lower bitrate means lower quality)
-            "-s", "640x360",  # Reduce resolution to 640x360 (lower resolution = faster transmission)
-            "-c:a", "aac",  # Use AAC audio codec
-            "-b:a", "128k",  # Set audio bitrate to 128k
+            "-c:v", "copy",  # Copy video codec
+            "-c:a", "copy",  # Copy audio codec
             "-bsf:v", "h264_mp4toannexb",  # Necessary for mpegts format
             "-f", "mpegts",  # Output format mpegts (Transport Stream)
             os.path.join(UPLOAD_FOLDER, "chunk.ts")  # Output file
@@ -201,57 +198,27 @@ def create_single_chunk(video_url):
             universal_newlines=True,
         )
         process.wait()
-        logger.info("Single TS chunk created with reduced quality.")
+        logger.info("Single TS chunk created.")
     except Exception as e:
         logger.error(f"Error processing video for single chunk: {e}")
 
-####################
-import subprocess
-
-def get_video_duration(video_url):
+def create_playlist_for_single_chunk():
     try:
-        # Run ffmpeg command to get the video duration
-        ffmpeg_cmd = ["ffmpeg", "-i", video_url]
-        process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        stderr = process.stderr.read()
-        
-        # Extract duration from ffmpeg stderr output
-        duration_line = [line for line in stderr.splitlines() if "Duration" in line]
-        if duration_line:
-            duration_str = duration_line[0].split(",")[0].split(" ")[1]
-            hours, minutes, seconds = map(float, duration_str.split(":"))
-            total_seconds = int(hours * 3600 + minutes * 60 + seconds)
-            return total_seconds
-        else:
-            raise Exception("Duration not found in video.")
-    except Exception as e:
-        logger.error(f"Error getting video duration: {e}")
-        return None
-
-
-
-####################
-def create_playlist_for_single_chunk(video_url):
-    try:
-        total_duration = get_video_duration(video_url)  # Get the total duration of the video
-        if total_duration is None:
-            raise Exception("Failed to get video duration.")
-
-        # Create the playlist content with the dynamic duration
-        playlist_content = f"""#EXTM3U
+        # Create a simple playlist that references the single chunk
+        playlist_content = """#EXTM3U
 #EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:10
 #EXT-X-MEDIA-SEQUENCE:0
 #EXT-X-ALLOW-CACHE:NO
-#EXTINF:{total_duration},
+#EXTINF:10,
 chunk.ts
 #EXT-X-ENDLIST
 """
         with open(os.path.join(UPLOAD_FOLDER, "stream.m3u8"), "w") as f:
             f.write(playlist_content)
-        logger.info("Playlist created with dynamic duration.")
+        logger.info("Playlist created for single chunk.")
     except Exception as e:
         logger.error(f"Error creating playlist: {e}")
-########################
 
 @app.route("/", methods=["GET", "POST"])
 def index():
