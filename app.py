@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 UPLOAD_FOLDER = tempfile.gettempdir()
-progress = {"value": 0}
 streaming_active = {"value": True}
 
 TEMPLATE = """
@@ -28,17 +27,6 @@ TEMPLATE = """
         body {
             background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
             min-height: 100vh;
-        }
-        .progress { 
-            height: 25px;
-            background-color: #e9ecef;
-            border-radius: 15px;
-            box-shadow: inset 0 1px 2px rgba(0,0,0,.1);
-        }
-        .progress-bar { 
-            transition: width 0.4s ease;
-            border-radius: 15px;
-            background: linear-gradient(45deg, #2193b0, #6dd5ed);
         }
         .card {
             border: none;
@@ -95,18 +83,6 @@ TEMPLATE = """
             word-break: break-all;
             margin-top: 10px;
         }
-        #progress-text {
-            margin-top: 8px;
-            font-weight: 500;
-            color: #1e3c72;
-        }
-        .icon-spin {
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
     </style>
 </head>
 <body class="d-flex align-items-center py-4">
@@ -139,18 +115,6 @@ TEMPLATE = """
                                 </button>
                             </div>
                         </form>
-
-                        <div class="mt-4">
-                            <div class="progress">
-                                <div id="progress-bar" class="progress-bar" role="progressbar" 
-                                     style="width: 0%" aria-valuenow="0" aria-valuemin="0" 
-                                     aria-valuemax="100"></div>
-                            </div>
-                            <div id="progress-text" class="text-center">
-                                <i class="fas fa-circle-notch icon-spin me-2"></i>
-                                Processing...
-                            </div>
-                        </div>
 
                         {% if stream_url %}
                         <div class="mt-4">
@@ -187,34 +151,11 @@ TEMPLATE = """
 
     <script>
         document.addEventListener("DOMContentLoaded", () => {
-            const progressBar = document.getElementById("progress-bar");
-            const progressText = document.getElementById("progress-text");
             const stopButton = document.getElementById("stop-stream");
-
             stopButton.addEventListener("click", () => {
                 fetch("/stop-stream", {method: "POST"})
-                    .then(response => response.json())
-                    .then(data => {
-                        progressText.innerHTML = '<i class="fas fa-stop-circle me-2"></i>Stream stopped';
-                        progressBar.style.width = "0%";
-                    });
+                    .then(response => response.json());
             });
-
-            function updateProgress() {
-                fetch("/progress")
-                    .then(response => response.json())
-                    .then(data => {
-                        const progress = data.value;
-                        progressBar.style.width = progress + "%";
-                        if (progress < 100) {
-                            progressText.innerHTML = `<i class="fas fa-circle-notch icon-spin me-2"></i>Processing... ${progress}%`;
-                            setTimeout(updateProgress, 500);
-                        } else {
-                            progressText.innerHTML = '<i class="fas fa-check-circle me-2"></i>Stream ready!';
-                        }
-                    });
-            }
-            updateProgress();
         });
     </script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
@@ -223,37 +164,39 @@ TEMPLATE = """
 """
 
 def create_infinite_playlist(duration):
-    playlist_content = """#EXTM3U
+    base_playlist = """#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:{duration}
 #EXT-X-MEDIA-SEQUENCE:{sequence}
-#EXTINF:{duration:.3f},
-chunk.ts
+#EXT-X-PLAYLIST-TYPE:EVENT
 """
     
     sequence = 0
     while streaming_active["value"]:
-        current_playlist = playlist_content.format(
+        current_playlist = base_playlist.format(
             duration=duration,
             sequence=sequence
         )
+        
+        # Add multiple entries to ensure continuous playback
+        for i in range(3):  # Keep a few entries in the playlist
+            current_playlist += f"#EXTINF:{duration:.3f},\nchunk.ts\n"
             
         with open(os.path.join(UPLOAD_FOLDER, "stream.m3u8"), "w") as f:
             f.write(current_playlist)
             
         sequence += 1
-        time.sleep(duration)
+        time.sleep(duration / 2)  # Update playlist more frequently than chunk duration
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    global progress, streaming_active
+    global streaming_active
     error = None
     stream_url = None
 
     if request.method == "POST":
         video_url = request.form["video_url"]
         stream_path = os.path.join(UPLOAD_FOLDER, "stream.m3u8")
-        progress["value"] = 0
         streaming_active["value"] = True
 
         def process_video():
@@ -275,7 +218,9 @@ def index():
                     "-i", video_url,
                     "-c:v", "copy",
                     "-c:a", "copy",
+                    "-movflags", "+faststart",
                     "-f", "mpegts",
+                    "-hls_flags", "append_list",
                     f"{UPLOAD_FOLDER}/chunk.ts"
                 ]
 
@@ -287,7 +232,6 @@ def index():
                 )
                 
                 process.wait()
-                progress["value"] = 100
                 
                 playlist_thread = threading.Thread(
                     target=create_infinite_playlist,
@@ -298,7 +242,6 @@ def index():
 
             except Exception as e:
                 logger.error(f"Error during video processing: {e}")
-                progress["value"] = 100
                 error = str(e)
 
         video_thread = threading.Thread(target=process_video)
@@ -308,10 +251,6 @@ def index():
         stream_url = f"https://{request.host}/stream/stream.m3u8"
 
     return render_template_string(TEMPLATE, stream_url=stream_url, error=error)
-
-@app.route("/progress")
-def get_progress():
-    return jsonify(progress)
 
 @app.route("/stop-stream", methods=["POST"])
 def stop_stream():
