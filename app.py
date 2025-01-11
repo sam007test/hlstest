@@ -5,8 +5,10 @@ import tempfile
 import threading
 import time
 import logging
+from collections import OrderedDict
 import shutil
-from typing import Dict
+from typing import Dict, Optional
+import io
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,13 +17,9 @@ app = Flask(__name__)
 
 UPLOAD_FOLDER = tempfile.gettempdir()
 SEGMENT_DURATION = 10  # Duration of each segment in seconds
+MAX_SEGMENTS = 3  # Maximum number of segments to keep in memory
+SEGMENT_CACHE_SIZE = 5  # Number of segments to cache
 streaming_active = {"value": True}
-current_stream = {
-    "base_ts_file": None,
-    "duration": None,
-    "segments": {},
-    "processed_videos": set()
-}
 
 TEMPLATE = """
 <!DOCTYPE html>
@@ -176,18 +174,32 @@ TEMPLATE = """
 </body>
 </html>
 """
+
+class StreamManager:
+    def __init__(self):
+        self.base_ts_file: Optional[str] = None
+        self.duration: Optional[float] = None
+        self.segment_cache = OrderedDict()  # LRU cache for segments
+        self.cache_lock = threading.Lock()
+        
+    def clear(self):
+        with self.cache_lock:
+            self.segment_cache.clear()
+            self.base_ts_file = None
+            self.duration = None
+
+stream_manager = StreamManager()
+
 def process_video(video_url: str) -> Dict:
-    """
-    Process video and store segments
-    """
+    """Process video and create base TS file with minimal memory usage"""
     segments_dir = os.path.join(UPLOAD_FOLDER, "segments")
     os.makedirs(segments_dir, exist_ok=True)
 
-    # Clean up any existing segments
+    # Clean up existing files
     shutil.rmtree(segments_dir)
     os.makedirs(segments_dir)
     
-    # Get video duration
+    # Get video duration using minimal resources
     duration_cmd = [
         "ffprobe",
         "-v", "error",
@@ -196,60 +208,93 @@ def process_video(video_url: str) -> Dict:
         video_url
     ]
     
-    duration = float(subprocess.check_output(duration_cmd).decode().strip())
-    
-    # Convert to TS format and segment
-    output_file = os.path.join(segments_dir, "chunk.ts")
+    try:
+        duration = float(subprocess.check_output(duration_cmd).decode().strip())
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error getting duration: {e}")
+        raise RuntimeError("Failed to process video duration")
+
+    # Convert to low-bitrate TS format to save memory
+    output_file = os.path.join(segments_dir, "base.ts")
     ffmpeg_cmd = [
         "ffmpeg",
         "-i", video_url,
-        "-c:v", "copy",
-        "-c:a", "copy",
-        "-bsf:v", "h264_mp4toannexb",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-b:v", "800k",  # Lower bitrate
+        "-c:a", "aac",
+        "-b:a", "128k",
         "-f", "mpegts",
         output_file
     ]
     
-    subprocess.run(ffmpeg_cmd, check=True)
-    
+    try:
+        subprocess.run(ffmpeg_cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error converting video: {e}")
+        raise RuntimeError("Failed to convert video")
+
     return {
         "duration": duration,
         "base_ts_file": output_file
     }
 
-def create_infinite_playlist(duration: float):
-    """
-    Create and continuously update the HLS playlist with continuous timestamps
-    """
-    base_playlist = """#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:{segment_duration}
-#EXT-X-MEDIA-SEQUENCE:{sequence}
-#EXT-X-ALLOW-CACHE:NO
-"""
+def get_segment(timestamp: float, duration: float, base_file: str) -> bytes:
+    """Get video segment with caching"""
+    cache_key = f"{timestamp:.1f}"
     
-    start_time = time.time()
-    sequence = 0
+    with stream_manager.cache_lock:
+        if cache_key in stream_manager.segment_cache:
+            return stream_manager.segment_cache[cache_key]
     
-    while streaming_active["value"]:
-        current_playlist = base_playlist.format(
-            segment_duration=SEGMENT_DURATION,
-            sequence=sequence
-        )
+    try:
+        offset = timestamp % duration if duration else 0
         
-        # Calculate absolute timestamp from start
-        elapsed_time = time.time() - start_time
+        process = subprocess.run([
+            'ffmpeg',
+            '-ss', str(offset),
+            '-i', base_file,
+            '-c', 'copy',
+            '-t', str(SEGMENT_DURATION),
+            '-f', 'mpegts',
+            'pipe:1'
+        ], capture_output=True, check=True)
+
+        segment_data = process.stdout
         
-        # Add segments with continuous timestamps
-        for i in range(3):
-            timestamp = elapsed_time + (i * SEGMENT_DURATION)
-            current_playlist += f"#EXTINF:{SEGMENT_DURATION:.3f},\nsegments/chunk.ts?t={timestamp:.3f}\n"
+        # Cache segment
+        with stream_manager.cache_lock:
+            stream_manager.segment_cache[cache_key] = segment_data
+            if len(stream_manager.segment_cache) > SEGMENT_CACHE_SIZE:
+                stream_manager.segment_cache.popitem(last=False)
         
-        with open(os.path.join(UPLOAD_FOLDER, "stream.m3u8"), "w") as f:
-            f.write(current_playlist)
-        
-        sequence += 1
-        time.sleep(SEGMENT_DURATION / 2)
+        return segment_data
+    
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error generating segment: {e}")
+        raise RuntimeError("Failed to generate segment")
+
+def create_playlist(duration: float) -> str:
+    """Create HLS playlist with minimal updates"""
+    current_time = time.time()
+    sequence = int(current_time / SEGMENT_DURATION)
+    
+    playlist = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        f"#EXT-X-TARGETDURATION:{SEGMENT_DURATION}",
+        f"#EXT-X-MEDIA-SEQUENCE:{sequence}",
+        "#EXT-X-ALLOW-CACHE:NO"
+    ]
+    
+    for i in range(MAX_SEGMENTS):
+        timestamp = current_time + (i * SEGMENT_DURATION)
+        playlist.extend([
+            f"#EXTINF:{SEGMENT_DURATION:.3f},",
+            f"segments/chunk.ts?t={timestamp:.3f}"
+        ])
+    
+    return "\n".join(playlist)
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -260,21 +305,9 @@ def index():
         streaming_active["value"] = True
 
         try:
-            # Always process video due to non-persistent storage
             video_info = process_video(video_url)
-            current_stream.update({
-                "duration": video_info["duration"],
-                "base_ts_file": video_info["base_ts_file"]
-            })
-
-            # Start playlist generator in a new thread
-            playlist_thread = threading.Thread(
-                target=create_infinite_playlist,
-                args=(current_stream["duration"],)
-            )
-            playlist_thread.daemon = True
-            playlist_thread.start()
-
+            stream_manager.base_ts_file = video_info["base_ts_file"]
+            stream_manager.duration = video_info["duration"]
             stream_url = f"https://{request.host}/stream/stream.m3u8"
 
         except Exception as e:
@@ -286,8 +319,8 @@ def index():
 @app.route("/stop-stream", methods=["POST"])
 def stop_stream():
     streaming_active["value"] = False
+    stream_manager.clear()
     try:
-        os.remove(os.path.join(UPLOAD_FOLDER, "stream.m3u8"))
         segments_dir = os.path.join(UPLOAD_FOLDER, "segments")
         if os.path.exists(segments_dir):
             shutil.rmtree(segments_dir)
@@ -299,43 +332,56 @@ def stop_stream():
 def serve_stream(filename):
     try:
         if filename.startswith("segments/"):
-            # Get timestamp from query parameter
             timestamp = float(request.args.get('t', 0))
             
-            # Calculate offset within video duration
-            video_duration = current_stream["duration"]
-            offset = timestamp % video_duration if video_duration else 0
-            
-            # Serve segment with timestamp offset
-            process = subprocess.Popen([
-                'ffmpeg',
-                '-ss', str(offset),
-                '-i', current_stream["base_ts_file"],
-                '-c', 'copy',
-                '-t', str(SEGMENT_DURATION),
-                '-f', 'mpegts',
-                'pipe:1'
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
-            output, error = process.communicate()
+            if not stream_manager.base_ts_file or not stream_manager.duration:
+                return "Stream not initialized", 500
+                
+            segment_data = get_segment(
+                timestamp,
+                stream_manager.duration,
+                stream_manager.base_ts_file
+            )
             
             response = app.response_class(
-                output,
+                segment_data,
                 mimetype='video/MP2T'
             )
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Cache-Control"] = "no-cache"
+            response.headers.update({
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=60"
+            })
             return response
             
         else:
-            # Serve m3u8 playlist
-            response = send_from_directory(UPLOAD_FOLDER, filename)
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Cache-Control"] = "no-cache"
+            playlist_content = create_playlist(stream_manager.duration)
+            response = app.response_class(
+                playlist_content,
+                mimetype='application/vnd.apple.mpegurl'
+            )
+            response.headers.update({
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "no-cache"
+            })
             return response
+            
     except Exception as e:
-        logger.error(f"Error serving file {filename}: {e}")
+        logger.error(f"Error serving {filename}: {e}")
         return str(e), 500
+
+@app.before_request
+def check_memory():
+    """Monitor memory usage and clean cache if necessary"""
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        memory_percent = process.memory_percent()
+        
+        if memory_percent > 80:  # If using more than 80% of available memory
+            stream_manager.clear()
+            logger.warning("Memory usage high - cleared cache")
+    except ImportError:
+        pass  # psutil not available
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
