@@ -4,7 +4,8 @@ TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Infinite Stream Generator</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+    <title> HLS Stream Generator</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -80,7 +81,7 @@ TEMPLATE = """
                     <div class="card-header position-relative">
                         <h3 class="text-white mb-0">
                             <i class="fas fa-broadcast-tower me-2"></i>
-                            Infinite Stream Generator
+                            HLS Stream Generator
                         </h3>
                         <span id="stream-status" class="status-badge bg-secondary text-white">
                             <i class="fas fa-circle me-1"></i>Idle
