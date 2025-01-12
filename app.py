@@ -87,7 +87,7 @@ TEMPLATE = """
                         </span>
                     </div>
                     <div class="card-body p-4">
-                    ##########################################
+
                     {% if error %}
                     <div class="alert mb-4" style="background: linear-gradient(45deg, #cb2d3e, #ef473a); color: white; border: none; border-radius: 10px; padding: 1.2rem;">
                         <div class="d-flex align-items-center">
@@ -100,7 +100,7 @@ TEMPLATE = """
                         </small>
                     </div>
                     {% endif %}
-                    ##########################################
+              
                         <form method="post" class="mb-4">
                             <div class="mb-4">
                                 <label for="video_url" class="form-label h6">
