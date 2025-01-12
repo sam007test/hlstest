@@ -94,10 +94,6 @@ TEMPLATE = """
                             <i class="fas fa-exclamation-circle me-2"></i>
                             <h5 class="mb-0">{{ error }}</h5>
                         </div>
-                        <small class="d-block mt-2">
-                            <i class="fas fa-info-circle me-2"></i>
-                            Click the "Stop Stream" button to end the current stream
-                        </small>
                     </div>
                     {% endif %}
               
