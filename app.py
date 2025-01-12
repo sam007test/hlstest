@@ -87,6 +87,20 @@ TEMPLATE = """
                         </span>
                     </div>
                     <div class="card-body p-4">
+                    ##########################################
+                    {% if error %}
+                    <div class="alert mb-4" style="background: linear-gradient(45deg, #cb2d3e, #ef473a); color: white; border: none; border-radius: 10px; padding: 1.2rem;">
+                        <div class="d-flex align-items-center">
+                            <i class="fas fa-exclamation-circle me-2"></i>
+                            <h5 class="mb-0">{{ error }}</h5>
+                        </div>
+                        <small class="d-block mt-2">
+                            <i class="fas fa-info-circle me-2"></i>
+                            Click the "Stop Stream" button to end the current stream
+                        </small>
+                    </div>
+                    {% endif %}
+                    ##########################################
                         <form method="post" class="mb-4">
                             <div class="mb-4">
                                 <label for="video_url" class="form-label h6">
@@ -220,12 +234,19 @@ chunk.ts
     except Exception as e:
         logger.error(f"Error creating playlist: {e}")
 
+##########################################
 @app.route("/", methods=["GET", "POST"])
 def index():
     global streaming_active, current_stream
     stream_url = None
 
     if request.method == "POST":
+        # Add this check at the start of POST handling
+        if current_stream["current_video_url"]:
+            return render_template_string(TEMPLATE, 
+                error="Please stop the current stream before starting a new one.",
+                current_video_url=current_stream["current_video_url"])
+
         video_url = request.form["video_url"]
         streaming_active["value"] = True
         current_stream["current_video_url"] = video_url
@@ -242,7 +263,10 @@ def index():
 
         stream_url = f"https://{request.host}/stream/stream.m3u8"
 
-    return render_template_string(TEMPLATE, stream_url=stream_url, current_video_url=current_stream["current_video_url"])
+    return render_template_string(TEMPLATE, 
+                                stream_url=stream_url, 
+                                current_video_url=current_stream["current_video_url"])
+##########################################
 
 @app.route("/stop-stream", methods=["POST"])
 def stop_stream():
