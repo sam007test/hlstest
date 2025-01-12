@@ -237,35 +237,30 @@ chunk.ts
 ##########################################
 @app.route("/", methods=["GET", "POST"])
 def index():
-    global streaming_active, current_stream
     stream_url = None
 
     if request.method == "POST":
-        # Add this check at the start of POST handling
-        if current_stream["current_video_url"]:
+        if os.path.exists(os.path.join(UPLOAD_FOLDER, "chunk.ts")):
+            # Return current stream info with error message
             return render_template_string(TEMPLATE, 
                 error="Please stop the current stream before starting a new one.",
+                stream_url=f"https://{request.host}/stream/stream.m3u8",
                 current_video_url=current_stream["current_video_url"])
-
+            
         video_url = request.form["video_url"]
-        streaming_active["value"] = True
         current_stream["current_video_url"] = video_url
 
-        # Only process video if not already processed
-        if not current_stream["ts_file"] or not os.path.exists(os.path.join(UPLOAD_FOLDER, "chunk.ts")):
-            try:
-                create_single_chunk(video_url)  # Create a single chunk
-                create_playlist_for_single_chunk()  # Create the playlist for that chunk
-                current_stream["ts_file"] = "chunk.ts"
-            except Exception as e:
-                logger.error(f"Error processing video: {e}")
-                return render_template_string(TEMPLATE, error=str(e))
-
-        stream_url = f"https://{request.host}/stream/stream.m3u8"
+        try:
+            create_single_chunk(video_url)
+            create_playlist_for_single_chunk()
+            stream_url = f"https://{request.host}/stream/stream.m3u8"
+        except Exception as e:
+            logger.error(f"Error processing video: {e}")
+            return render_template_string(TEMPLATE, error=str(e))
 
     return render_template_string(TEMPLATE, 
-                                stream_url=stream_url, 
-                                current_video_url=current_stream["current_video_url"])
+                                stream_url=stream_url if os.path.exists(os.path.join(UPLOAD_FOLDER, "chunk.ts")) else None, 
+                                current_video_url=current_stream.get("current_video_url") if os.path.exists(os.path.join(UPLOAD_FOLDER, "chunk.ts")) else None)
 ##########################################
 
 @app.route("/stop-stream", methods=["POST"])
